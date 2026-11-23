@@ -54,7 +54,13 @@ const {
     hasWholesaleCatalogAccess,
     hasB2bWholesalePortalAccess,
     CUSTOMER_TIER,
+    isSuperAdmin,
+    SUPER_ADMIN_EMAILS,
 } = require('./services/authService');
+const SUPER_ADMIN_EMAILS_SQL_ARRAY = SUPER_ADMIN_EMAILS.map((e) =>
+    `'${String(e).toLowerCase().replace(/'/g, "''")}'`,
+).join(', ');
+const SUPER_ADMIN_USER_SORT_SQL = `CASE WHEN LOWER(TRIM(email)) = ANY(ARRAY[${SUPER_ADMIN_EMAILS_SQL_ARRAY}]) THEN 0 ELSE 1 END`;
 const { sanitizeMiddleware, validateNumbers } = require('./middleware/sanitize');
 const { globalLimiter, authLimiter, adminLimiter, skipRateLimitForCurrentUser, requireJson } = require('./middleware/rateLimit');
 const { hasPermission, getPermissionContext } = require('./middleware/checkPermission');
@@ -789,9 +795,7 @@ app.get('/auth/google/callback', authLimiter, (req, res, next) => {
                 req.user = resolveUserRole(req.user);
 
                 const email = String(req.user.email || '').toLowerCase().trim();
-                const isSuperAdmin = email === 'jaigaurav56789@gmail.com';
-
-                if (isSuperAdmin) {
+                if (isSuperAdmin(email)) {
                     req.user.role = 'super_admin';
                     req.user.allowed_tabs = ['all'];
                     req.user.account_status = 'active';
@@ -2746,7 +2750,7 @@ async function checkAndMigrateUsersTable() {
             SET permissions = '{"all": true, "modules": ["*"]}'::jsonb,
                 allowed_tabs = COALESCE(allowed_tabs, ARRAY['all']),
                 role = COALESCE(role, 'admin')
-            WHERE email = 'jaigaurav56789@gmail.com'
+            WHERE LOWER(TRIM(email)) = ANY(ARRAY[${SUPER_ADMIN_EMAILS_SQL_ARRAY}])
             AND (permissions IS NULL OR permissions = '{}'::jsonb);
         `);
         
@@ -4467,7 +4471,7 @@ app.get('/api/admin/users', isAdminStrict, async (req, res) => {
                 FROM users 
                 WHERE COALESCE(is_deleted, false) = false
                 ORDER BY 
-                    CASE WHEN email = 'jaigaurav56789@gmail.com' THEN 0 ELSE 1 END,
+                    ${SUPER_ADMIN_USER_SORT_SQL},
                     role ASC,
                     created_at DESC
             `);
@@ -4489,7 +4493,7 @@ app.get('/api/admin/users', isAdminStrict, async (req, res) => {
                     FROM users 
                     WHERE COALESCE(is_deleted, false) = false
                     ORDER BY 
-                        CASE WHEN email = 'jaigaurav56789@gmail.com' THEN 0 ELSE 1 END,
+                        ${SUPER_ADMIN_USER_SORT_SQL},
                         role ASC,
                         created_at DESC
                 `);
@@ -4509,7 +4513,7 @@ app.get('/api/admin/users', isAdminStrict, async (req, res) => {
                     FROM users 
                     WHERE COALESCE(is_deleted, false) = false
                     ORDER BY 
-                        CASE WHEN email = 'jaigaurav56789@gmail.com' THEN 0 ELSE 1 END,
+                        ${SUPER_ADMIN_USER_SORT_SQL},
                         role ASC,
                         created_at DESC
                 `);
@@ -4526,7 +4530,7 @@ app.get('/api/admin/users', isAdminStrict, async (req, res) => {
                            created_at, updated_at 
                     FROM users 
                     ORDER BY 
-                        CASE WHEN email = 'jaigaurav56789@gmail.com' THEN 0 ELSE 1 END,
+                        ${SUPER_ADMIN_USER_SORT_SQL},
                         role ASC,
                         created_at DESC
                 `);
@@ -4781,7 +4785,7 @@ app.put('/api/admin/users/:id', isAdminStrict, async (req, res) => {
         const user = existingUser[0];
         
         // Prevent modifying super admin's role or permissions
-        if (user.email === 'jaigaurav56789@gmail.com') {
+        if (isSuperAdmin(user.email)) {
             // Only allow name update for super admin
             if (role && role !== 'admin') {
                 return res.status(403).json({ error: 'Cannot change Super Admin role' });
@@ -5268,7 +5272,7 @@ app.delete('/api/admin/users/:id', isAdminStrict, async (req, res) => {
         const user = userResult[0];
         
         // Prevent deleting super admin
-        if (user.email === 'jaigaurav56789@gmail.com') {
+        if (isSuperAdmin(user.email)) {
             return res.status(403).json({ error: 'Cannot delete Super Admin account' });
         }
         
@@ -5305,7 +5309,7 @@ app.put('/api/admin/users/:id/tabs', isAdminStrict, async (req, res) => {
         }
         
         // Prevent restricting super admin
-        if (existingUser[0].email === 'jaigaurav56789@gmail.com' && !allowedTabs.includes('all')) {
+        if (isSuperAdmin(existingUser[0].email) && !allowedTabs.includes('all')) {
             return res.status(403).json({ error: 'Cannot restrict Super Admin permissions' });
         }
         
@@ -5729,7 +5733,7 @@ app.put('/api/users/:id', isAdminStrict, async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
         
-        if (existingUser[0].email === 'jaigaurav56789@gmail.com' && email && email !== 'jaigaurav56789@gmail.com') {
+        if (isSuperAdmin(existingUser[0].email) && email && !isSuperAdmin(email)) {
             return res.status(403).json({ error: 'Cannot change super admin email' });
         }
         
@@ -5762,7 +5766,7 @@ app.delete('/api/users/:id', isAdminStrict, async (req, res) => {
         
         // Prevent deleting super admin
         const user = await query('SELECT * FROM users WHERE id = $1', [id]);
-        if (user.length > 0 && user[0].email === 'jaigaurav56789@gmail.com') {
+        if (user.length > 0 && isSuperAdmin(user[0].email)) {
             return res.status(403).json({ error: 'Cannot delete super admin' });
         }
         
@@ -6967,7 +6971,10 @@ app.get('/api/admin/inbox-summary', async (req, res) => {
         const seenResellerProducts = seenMap.reseller_product_submissions || null;
         const seenResellerCatalog = seenMap.reseller_catalog_inquiries || null;
 
-        const insightsUserExclusion = `LOWER(TRIM(COALESCE(email, ''))) <> 'jaigaurav56789@gmail.com' AND COALESCE(role, '') NOT IN ('admin', 'super_admin')`;
+        const superAdminEmailSql = SUPER_ADMIN_EMAILS.map((e) =>
+            `'${String(e).toLowerCase().replace(/'/g, "''")}'`,
+        ).join(', ');
+        const insightsUserExclusion = `LOWER(TRIM(COALESCE(email, ''))) NOT IN (${superAdminEmailSql}) AND COALESCE(role, '') NOT IN ('admin', 'super_admin')`;
 
         const [
             b2bRows,
@@ -7402,15 +7409,13 @@ const { randomUUID } = require('crypto');
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const KC_SUPER_ADMIN_EMAIL = 'jaigaurav56789@gmail.com';
-
 function userHasAdminDashboardAccess(user) {
     if (!user) return false;
     const email = String(user.email || '')
         .toLowerCase()
         .trim();
     const role = String(user.role || '');
-    return email === KC_SUPER_ADMIN_EMAIL || role === 'super_admin' || role === 'admin';
+    return isSuperAdmin(email) || role === 'super_admin' || role === 'admin';
 }
 
 async function buildSharedCatalogShareUrl(catalogUuid, creatorUserId) {

@@ -1,5 +1,5 @@
 import type { WholesalePricingInput } from './pricing'
-import { SUPER_ADMIN_EMAIL } from '@/lib/is-catalog-admin'
+import { isKcSuperAdminEmail } from '@/lib/admin-access'
 
 /**
  * Customer tier — consistent with PostgreSQL `users.customer_tier` and API `user.customer_tier`.
@@ -91,7 +91,7 @@ export function hasWholesaleCatalogAccess(
 ): boolean {
   if (!user) return false
   const email = String(user.email || '').toLowerCase().trim()
-  if (email === SUPER_ADMIN_EMAIL.toLowerCase()) return true
+  if (isKcSuperAdminEmail(email)) return true
   const tier = normalizeCustomerTier(user.customer_tier)
   return (
     tier === CUSTOMER_TIER.B2B_WHOLESALE ||
@@ -110,7 +110,7 @@ export function hasB2bWholesalePortalAccess(
 ): boolean {
   if (!user) return false
   const email = String(user.email || '').toLowerCase().trim()
-  if (email === SUPER_ADMIN_EMAIL.toLowerCase()) return true
+  if (isKcSuperAdminEmail(email)) return true
   const tier = normalizeCustomerTier(user.customer_tier)
   return tier === CUSTOMER_TIER.B2B_WHOLESALE || tier === CUSTOMER_TIER.ADMIN
 }

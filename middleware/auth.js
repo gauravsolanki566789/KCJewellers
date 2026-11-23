@@ -272,8 +272,9 @@ module.exports = {
                 return res.status(401).json({ error: 'Not authenticated' });
             }
             
+            const { isSuperAdmin: isSuperAdminEmail } = require('../services/authService');
             const email = String(req.user?.email || '').toLowerCase().trim();
-            const isSuperAdmin = email === 'jaigaurav56789@gmail.com';
+            const isSuperAdmin = isSuperAdminEmail(email);
             
             // Strict override: Force super_admin role and ['all'] tabs for super admin
             if (isSuperAdmin) {
@@ -314,8 +315,9 @@ module.exports = {
             if (tier === 'RESELLER') {
                 return next();
             }
+            const { isSuperAdmin: isSuperAdminEmail } = require('../services/authService');
             const email = String(req.user?.email || '').toLowerCase().trim();
-            if (email === 'jaigaurav56789@gmail.com') {
+            if (isSuperAdminEmail(email)) {
                 req.user.role = 'super_admin';
                 req.user.allowed_tabs = ['all'];
                 return next();

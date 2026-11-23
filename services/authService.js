@@ -5,29 +5,39 @@
 
 const SUPER_ADMIN_EMAIL = 'jaigaurav56789@gmail.com';
 
+/** Whitelisted Google emails with full KC admin (sync with client `admin-access.ts`). */
+const SUPER_ADMIN_EMAILS = [
+    'jaigaurav56789@gmail.com',
+    '22btrsn018@jainuniversity.ac.in',
+];
+
+function normalizeLoginEmail(email) {
+    return String(email || '').toLowerCase().trim();
+}
+
 /**
  * Resolve user role based on hardcoded Super Admin check.
- * - jaigaurav56789@gmail.com → always 'super_admin' with ['all'] allowed_tabs
+ * - Whitelisted super-admin emails → always 'super_admin' with ['all'] allowed_tabs
  * - All others → always 'customer' (admin access denied)
  * @param {Object} user - User object from DB
  * @returns {Object} User with role forced
  */
 function resolveUserRole(user) {
     if (!user) return null;
-    const email = String(user.email || '').toLowerCase().trim();
-    const superAdminEmail = String(SUPER_ADMIN_EMAIL).toLowerCase().trim();
+    const email = normalizeLoginEmail(user.email);
     // OTP-only users have no email; always customer
     if (!email) {
         return { ...user, role: 'customer', allowed_tabs: user.allowed_tabs || [] };
     }
     
-    if (email === superAdminEmail) {
+    if (isSuperAdmin(email)) {
         // Strict override: Force super_admin role and all tabs access
         return { 
             ...user, 
             role: 'super_admin',
             allowed_tabs: ['all'],
-            account_status: user.account_status || 'active'
+            account_status: user.account_status || 'active',
+            customer_tier: 'ADMIN',
         };
     }
     // Deny admin access to everyone else - force customer role
@@ -39,12 +49,13 @@ function resolveUserRole(user) {
 }
 
 /**
- * Check if email is the Super Admin
+ * Check if email is a whitelisted Super Admin
  * @param {string} email
  * @returns {boolean}
  */
 function isSuperAdmin(email) {
-    return String(email || '').toLowerCase().trim() === SUPER_ADMIN_EMAIL;
+    const normalized = normalizeLoginEmail(email);
+    return SUPER_ADMIN_EMAILS.some((e) => normalizeLoginEmail(e) === normalized);
 }
 
 /** Customer tier values — consistent with DB `users.customer_tier` and Prisma `CustomerTier`. */
@@ -62,7 +73,7 @@ const CUSTOMER_TIER = {
 function hasWholesaleCatalogAccess(user) {
     if (!user) return false;
     const email = String(user.email || '').toLowerCase().trim();
-    if (email === SUPER_ADMIN_EMAIL.toLowerCase().trim()) return true;
+    if (isSuperAdmin(email)) return true;
     const tier = String(user.customer_tier || CUSTOMER_TIER.B2C_CUSTOMER).toUpperCase();
     return (
         tier === CUSTOMER_TIER.B2B_WHOLESALE ||
@@ -78,13 +89,15 @@ function hasWholesaleCatalogAccess(user) {
 function hasB2bWholesalePortalAccess(user) {
     if (!user) return false;
     const email = String(user.email || '').toLowerCase().trim();
-    if (email === SUPER_ADMIN_EMAIL.toLowerCase().trim()) return true;
+    if (isSuperAdmin(email)) return true;
     const tier = String(user.customer_tier || CUSTOMER_TIER.B2C_CUSTOMER).toUpperCase();
     return tier === CUSTOMER_TIER.B2B_WHOLESALE || tier === CUSTOMER_TIER.ADMIN;
 }
 
 module.exports = {
     SUPER_ADMIN_EMAIL,
+    SUPER_ADMIN_EMAILS,
+    normalizeLoginEmail,
     resolveUserRole,
     isSuperAdmin,
     CUSTOMER_TIER,
