@@ -1,14 +1,27 @@
+
+# Dependencies
 node_modules/
-jewelry.db
+
+# Environment variables
 .env
-.vercel
-*.log
-dist/
-dist-build/
-*.exe
-*.dmg
-*.AppImage
-.DS_Store
-Thumbs.db
+.env.*
+!.env.example
+
+# Database
+jewelry.db
+
+# User uploaded files - NEVER upload to GitHub
+public/uploads/
+
+# Logs
 *.log
 *.tmp
+
+# Build outputs
+dist/
+dist-build/
+client/.next/
+
+# Operating system
+.DS_Store
+Thumbs.db
