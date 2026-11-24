@@ -37,7 +37,6 @@ function resolveUserRole(user) {
             role: 'super_admin',
             allowed_tabs: ['all'],
             account_status: user.account_status || 'active',
-            customer_tier: 'ADMIN',
         };
     }
     // Deny admin access to everyone else - force customer role

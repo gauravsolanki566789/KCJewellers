@@ -518,8 +518,8 @@ function ProfilePageContent() {
               </section>
             )}
 
-            {/* Pending reseller application (non-resellers only) */}
-            <ResellerApplicationStatusPanel />
+            {/* Pending reseller application (customers only — not KC super-admins) */}
+            {!strictInbox ? <ResellerApplicationStatusPanel /> : null}
 
             {/* Admin */}
             {isAdmin ? (
