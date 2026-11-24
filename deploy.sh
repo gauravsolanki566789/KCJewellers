@@ -152,6 +152,20 @@ pm2_restart_if_exists() {
   fi
   return 1
 }
+pm2_start_if_stopped() {
+  local name="$1"
+  if ! pm2 describe "$name" >/dev/null 2>&1; then
+    return 1
+  fi
+  local pid
+  pid=$(pm2 pid "$name" 2>/dev/null || true)
+  if [ -z "$pid" ] || [ "$pid" = "0" ]; then
+    echo "   Starting $name (was stopped)…"
+    pm2 start "$name"
+    return 0
+  fi
+  return 1
+}
 if command -v pm2 >/dev/null 2>&1; then
   if [ "$CLIENT_BUILD" = "1" ] && [ "$BACKEND_TOUCHED" = "1" ]; then
     pm2 restart all
@@ -164,9 +178,11 @@ if command -v pm2 >/dev/null 2>&1; then
     if [ "$restarted" = "0" ]; then
       pm2 restart all
     fi
-  else
-    echo "   No PM2 restart needed for this commit."
   fi
+  # Backend-only deploy must not leave Next.js down (502 from nginx).
+  pm2_start_if_stopped kc-frontend
+  pm2_start_if_stopped kc-backend
+  pm2_start_if_stopped gaurav-app
 else
   echo "   pm2 not found — skip restart."
 fi
