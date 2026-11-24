@@ -23,6 +23,10 @@ step_time() {
   printf '   (%ss elapsed)\n' "$elapsed"
 }
 
+has_next_prod_build() {
+  [ -f client/.next/BUILD_ID ]
+}
+
 echo "Starting deployment process…"
 echo "   branch: origin/${DEPLOY_BRANCH}"
 
@@ -53,9 +57,9 @@ if [ "${KC_FORCE_CLIENT_BUILD:-}" = "1" ] || [ "${KC_FORCE_CLIENT_BUILD:-}" = "t
   CLIENT_INSTALL=1
   CLIENT_CLEAN=1
 elif [ -z "$CHANGED" ]; then
-  if [ "$PREV_REF" = "$NEW_REF" ] && [ -d client/.next ]; then
+  if [ "$PREV_REF" = "$NEW_REF" ] && has_next_prod_build; then
     CLIENT_BUILD=0
-    echo "ℹ️  No new commits and client/.next exists — skipping client build (set KC_FORCE_CLIENT_BUILD=1 to rebuild)."
+    echo "ℹ️  No new commits and client/.next/BUILD_ID exists — skipping client build (set KC_FORCE_CLIENT_BUILD=1 to rebuild)."
   else
     CLIENT_BUILD=1
     CLIENT_INSTALL=1
@@ -99,14 +103,21 @@ fi
 
 if [ "$CLIENT_BUILD" = "0" ]; then
   export KC_SKIP_FRONTEND_STOP=1
-  if [ ! -f client/.next/BUILD_ID ]; then
-    echo "⚠️  client/.next is missing or incomplete — forcing client build."
+  if ! has_next_prod_build; then
+    echo "⚠️  No Next production build (client/.next/BUILD_ID) — forcing client build."
     CLIENT_BUILD=1
     CLIENT_INSTALL=0
     if [ ! -d client/node_modules ]; then
       CLIENT_INSTALL=1
     fi
     unset KC_SKIP_FRONTEND_STOP
+  fi
+fi
+
+if [ "$CLIENT_BUILD" = "1" ] && ! has_next_prod_build && [ "$CLIENT_CLEAN" != "1" ]; then
+  if [ -d client/.next ] && [ ! -f client/.next/BUILD_ID ]; then
+    echo "   Removing broken client/.next (no BUILD_ID)…"
+    rm -rf client/.next
   fi
 fi
 
@@ -135,7 +146,13 @@ if [ "$CLIENT_BUILD" = "1" ]; then
   else
     echo "   Skipping npm install (client lockfile unchanged)."
   fi
+  export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1536}"
   npm run build
+  if [ ! -f .next/BUILD_ID ]; then
+    echo "❌ next build did not produce .next/BUILD_ID — aborting."
+    cd ..
+    exit 1
+  fi
   cd ..
   step_time
 else
@@ -180,6 +197,7 @@ if command -v pm2 >/dev/null 2>&1; then
     pm2 restart all
   elif [ "$CLIENT_BUILD" = "1" ]; then
     pm2_restart_if_exists kc-frontend || pm2 restart all
+    pm2_restart_if_exists kc-backend || true
   elif [ "$BACKEND_TOUCHED" = "1" ]; then
     restarted=0
     pm2_restart_if_exists kc-backend && restarted=1

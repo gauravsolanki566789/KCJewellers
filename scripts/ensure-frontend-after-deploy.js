@@ -3,9 +3,13 @@
  * After deploy.sh step 5: ensure kc-frontend answers HTTP on the port nginx uses.
  * Backend-only deploys used to leave Next stopped or crash-looping → nginx 502.
  */
+const fs = require('fs');
 const http = require('http');
+const path = require('path');
 const { execSync } = require('child_process');
 
+const REPO_ROOT = path.join(__dirname, '..');
+const NEXT_BUILD_ID = path.join(REPO_ROOT, 'client', '.next', 'BUILD_ID');
 const FRONTEND_PM2_NAME = 'kc-frontend';
 const PORT = parseInt(process.env.KC_FRONTEND_PORT || '3001', 10);
 const WAIT_SEC = parseInt(process.env.KC_FRONTEND_WAIT_SEC || '45', 10);
@@ -77,10 +81,28 @@ async function waitHealthy(deadlineMs) {
     return false;
 }
 
+function stopFrontendCrashLoop() {
+    try {
+        execSync(`pm2 stop ${FRONTEND_PM2_NAME}`, { stdio: 'inherit' });
+    } catch {
+        /* ignore */
+    }
+}
+
 async function main() {
     if (process.platform === 'win32') {
         return;
     }
+
+    if (!fs.existsSync(NEXT_BUILD_ID)) {
+        console.error('');
+        console.error('❌ Missing client/.next/BUILD_ID — Next cannot run in production.');
+        console.error('   On VPS:  bash scripts/rebuild-frontend.sh');
+        console.error('   Or:      KC_FORCE_CLIENT_BUILD=1 ./deploy.sh');
+        stopFrontendCrashLoop();
+        process.exit(1);
+    }
+
   if (!frontendProc()) {
     console.log(`   ⚠️  PM2 app "${FRONTEND_PM2_NAME}" not found — skip frontend health check.`);
     return;

@@ -2,19 +2,6 @@ ssh root@159.65.145.51
 cd /var/www/kcjewellers
 ./deploy.sh
 
-### 502 Bad Gateway after deploy
-Nginx hits **127.0.0.1:3001**; Next must listen there (`client` `npm run start` uses `-p 3001`).
-
-On the VPS:
-```bash
-pm2 logs kc-frontend --lines 80
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3001/
-pm2 restart kc-frontend
-# if still 502 or "Could not find BUILD_ID":
-KC_FORCE_CLIENT_BUILD=1 ./deploy.sh
-```
-PM2 template: `ecosystem.kcjewellers.config.cjs` (paths/PORT must match your `.env`).
-
 To add a domain as reseller:
 sudo nano /etc/nginx/sites-available/kcjewellers
 
