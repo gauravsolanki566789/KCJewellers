@@ -15,6 +15,8 @@ import {
   ListOrdered,
   X,
   Tags,
+  Trash2,
+  Loader2,
 } from 'lucide-react'
 import {
   GoldJewelleryRingIcon,
@@ -44,6 +46,11 @@ import {
   resolveCategoryDiscountForMetalTab,
   type CatalogMetalKey,
 } from '@/lib/catalog-metal-family'
+import {
+  categoryDeclaresMetal,
+  parseCatalogMetalsArray,
+  subcategoryMatchesMetalTab as subMatchesMetalTab,
+} from '@/lib/catalog-category-metals'
 
 /** Metal types — values match backend metal_type (lowercase) */
 const METAL_TABS = [
@@ -99,9 +106,21 @@ function extractDesignGroupsFromProducts(
   return [...seen]
 }
 
+type GroupedCatalogSku = {
+  sku: string
+  products: Product[]
+  subcategoryId?: number
+  emptySku?: boolean
+}
+
 type GroupedCatalog = {
   styleCode: string
-  skus: { sku: string; products: Product[] }[]
+  skus: GroupedCatalogSku[]
+}
+
+type NestedCatalogRow = GroupedCatalog & {
+  categoryId?: number
+  emptyStyle?: boolean
 }
 
 type SubcategoryInfo = {
@@ -119,20 +138,6 @@ type SubcategoryInfo = {
   has_silver?: boolean
   has_diamond?: boolean
   has_gifting?: boolean
-}
-
-function subcategoryMatchesMetalTab(sub: SubcategoryInfo, metal: MetalKey): boolean {
-  const hasMeta =
-    sub.has_gold !== undefined ||
-    sub.has_silver !== undefined ||
-    sub.has_diamond !== undefined ||
-    sub.has_gifting !== undefined
-  if (!hasMeta) return true
-  if (metal === 'gold') return !!sub.has_gold
-  if (metal === 'silver') return !!sub.has_silver
-  if (metal === 'diamond') return !!sub.has_diamond
-  if (metal === 'gifting') return !!sub.has_gifting
-  return false
 }
 
 const GIFT_CATALOG_STYLE_RE = /gift|plated|utsav|silver-gift/i
@@ -218,10 +223,10 @@ function enrichGiftingCatalogTree(
 function subcategoryVisibleOnMetalTab(
   sub: SubcategoryInfo,
   metal: MetalKey,
-  cat: { slug?: string; name?: string },
+  cat: WebCategory,
   orderProducts: Product[],
 ): boolean {
-  if (subcategoryMatchesMetalTab(sub, metal)) return true
+  if (subMatchesMetalTab(sub, metal as CatalogMetalKey, cat)) return true
   if (metal !== 'gifting') return false
   if (isGiftCatalogStyle(cat) && (sub.product_count ?? 0) > 0) return true
   return orderProducts.some(
@@ -236,14 +241,32 @@ function filterCatalogTreeForMetalTab(
   metal: MetalKey,
   orderProducts: Product[] = [],
 ): WebCategory[] {
+  const metalKey = metal as CatalogMetalKey
   return categories
-    .map((cat) => ({
-      ...cat,
-      subcategories: (cat.subcategories || []).filter((sub) =>
-        subcategoryVisibleOnMetalTab(sub, metal, cat, orderProducts),
-      ),
-    }))
-    .filter((cat) => (cat.subcategories?.length ?? 0) > 0)
+    .map((cat) => {
+      const catRow: WebCategory = {
+        ...cat,
+        catalog_metals: parseCatalogMetalsArray(cat.catalog_metals),
+      }
+      let subs = (cat.subcategories || []).filter((sub) =>
+        subcategoryVisibleOnMetalTab(sub, metal, catRow, orderProducts),
+      )
+      if (subs.length === 0 && categoryDeclaresMetal(catRow, metalKey)) {
+        subs = [
+          {
+            id: 0,
+            name: 'No SKU yet',
+            slug: '',
+            product_count: 0,
+          },
+        ]
+      }
+      return { ...catRow, subcategories: subs }
+    })
+    .filter(
+      (cat) =>
+        (cat.subcategories?.length ?? 0) > 0 || categoryDeclaresMetal(cat, metalKey),
+    )
 }
 
 function discoverDesignGroupsForSubcategory(
@@ -282,6 +305,8 @@ type WebCategory = {
   has_silver?: boolean
   has_diamond?: boolean
   has_gifting?: boolean
+  /** Declared scope when style has 0 products (Kumudu / reseller allowed list) */
+  catalog_metals?: CatalogMetalKey[]
 }
 
 export default function AdminProductsPage() {
@@ -332,6 +357,7 @@ export default function AdminProductsPage() {
   const [savingRetailBrowse, setSavingRetailBrowse] = useState(false)
   const [giftingGstEnabled, setGiftingGstEnabled] = useState(true)
   const [savingGiftingGst, setSavingGiftingGst] = useState(false)
+  const [catalogDeleting, setCatalogDeleting] = useState<string | null>(null)
 
   const retailBrowseEnabledForTab = useMemo(() => {
     if (selectedMetal === 'gifting') return false
@@ -775,8 +801,6 @@ export default function AdminProductsPage() {
     })
   }
 
-  const catalog = groupedCatalog()
-
   /** Styles + SKUs scoped to the active metal tab (Chain Pendant CBT ≠ Silver PREMIUM/EXCLUSIVE). */
   const enrichedCategories = useMemo(
     () =>
@@ -791,10 +815,95 @@ export default function AdminProductsPage() {
     [enrichedCategories, selectedMetal, orderCatalogProducts],
   )
 
+  const nestedCatalogView = useMemo((): NestedCatalogRow[] => {
+    const fromProducts = groupedCatalog()
+    const map = new Map<string, NestedCatalogRow>()
+    for (const g of fromProducts) {
+      map.set(g.styleCode, { ...g })
+    }
+    for (const cat of categoriesWithProducts) {
+      const existing = map.get(cat.name)
+      if (!existing) {
+        map.set(cat.name, {
+          styleCode: cat.name,
+          categoryId: cat.id,
+          emptyStyle: true,
+          skus: (cat.subcategories || [])
+            .filter((s) => s.id > 0)
+            .map((sub) => ({
+              sku: sub.name,
+              products: [] as Product[],
+              subcategoryId: sub.id,
+              emptySku: (sub.product_count ?? 0) === 0,
+            })),
+        })
+        continue
+      }
+      existing.categoryId = cat.id
+      const skuNames = new Set(existing.skus.map((s) => s.sku))
+      for (const sub of cat.subcategories || []) {
+        if (sub.id <= 0) continue
+        if (!skuNames.has(sub.name)) {
+          existing.skus.push({
+            sku: sub.name,
+            products: [],
+            subcategoryId: sub.id,
+            emptySku: (sub.product_count ?? 0) === 0,
+          })
+          skuNames.add(sub.name)
+        }
+      }
+      if (existing.skus.length === 0 && (cat.subcategories?.length ?? 0) > 0) {
+        existing.emptyStyle = true
+      }
+    }
+    return [...map.values()].sort((a, b) =>
+      a.styleCode.localeCompare(b.styleCode, undefined, { sensitivity: 'base' }),
+    )
+  }, [products, categoriesWithProducts])
+
+  const handleDeleteCategory = async (cat: WebCategory, styleCode: string) => {
+    const id = cat.id
+    if (!id) return
+    const msg = `Delete style "${styleCode}" and all its SKUs/products? This cannot be undone.`
+    if (!window.confirm(msg)) return
+    setCatalogDeleting(`cat-${id}`)
+    try {
+      await axios.delete(`${url}/api/admin/catalog/category/${id}`, { withCredentials: true })
+      await loadCatalog()
+      await load()
+      await loadOrderCatalogProducts()
+    } catch {
+      window.alert('Could not delete category. Try again.')
+    } finally {
+      setCatalogDeleting(null)
+    }
+  }
+
+  const handleDeleteSubcategory = async (subId: number, skuLabel: string, styleCode: string) => {
+    if (!subId) return
+    const msg = `Delete SKU "${skuLabel}" under "${styleCode}" and all its products?`
+    if (!window.confirm(msg)) return
+    setCatalogDeleting(`sub-${subId}`)
+    try {
+      await axios.delete(`${url}/api/admin/catalog/subcategory/${subId}`, {
+        withCredentials: true,
+      })
+      await loadCatalog()
+      await load()
+      await loadOrderCatalogProducts()
+    } catch {
+      window.alert('Could not delete SKU row.')
+    } finally {
+      setCatalogDeleting(null)
+    }
+  }
+
   const retailTagRows = useMemo(() => {
     const rows: { cat: WebCategory; sub: SubcategoryInfo }[] = []
     for (const cat of categoriesWithProducts) {
       for (const sub of cat.subcategories || []) {
+        if (!sub.id || sub.id <= 0) continue
         rows.push({ cat, sub })
       }
     }
@@ -1197,9 +1306,22 @@ export default function AdminProductsPage() {
                     Nested catalogue: Style Code → SKU Code → Products
                   </p>
                   <div className="space-y-2">
-                    {catalog.map(({ styleCode, skus }) => {
+                    {nestedCatalogView.length === 0 ? (
+                      <p className="text-sm text-slate-500 py-6 text-center">
+                        No styles for this metal tab. Empty Kumudu styles appear here after migration 141
+                        (catalog_metals).
+                      </p>
+                    ) : null}
+                    {nestedCatalogView.map(({ styleCode, skus, categoryId, emptyStyle }) => {
                       const styleKey = styleCode
                       const isStyleOpen = expandedStyles.has(styleKey)
+                      const catRow =
+                        getCategoryForStyle(styleCode) ||
+                        categoriesWithProducts.find((c) => c.id === categoryId) ||
+                        null
+                      const productTotal = skus.reduce((s, x) => s + x.products.length, 0)
+                      const deletingStyle =
+                        catRow && catalogDeleting === `cat-${catRow.id}`
                       return (
                         <div
                           key={styleKey}
@@ -1207,8 +1329,9 @@ export default function AdminProductsPage() {
                         >
                           <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-4">
                             <button
+                              type="button"
                               onClick={() => toggleStyle(styleKey)}
-                              className="flex items-center gap-2 text-left hover:bg-white/5 rounded-lg -m-2 p-2 transition-colors flex-1 min-w-0"
+                              className="flex items-center gap-2 text-left hover:bg-white/5 rounded-lg -m-2 p-2 transition-colors flex-1 min-w-0 touch-manipulation min-h-[44px]"
                             >
                               {isStyleOpen ? (
                                 <ChevronDown className="size-4 text-amber-500 shrink-0" />
@@ -1218,67 +1341,119 @@ export default function AdminProductsPage() {
                               <span className="font-semibold text-slate-200 shrink-0">
                                 {styleCode}
                               </span>
+                              {emptyStyle && productTotal === 0 ? (
+                                <span className="text-[10px] font-medium uppercase tracking-wide text-amber-600/90 bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5">
+                                  Empty style
+                                </span>
+                              ) : null}
                               <span className="text-slate-500 text-sm truncate">
-                                ({skus.length} SKU{skus.length !== 1 ? 's' : ''}, {skus.reduce((s, x) => s + x.products.length, 0)} products)
+                                ({skus.length} SKU{skus.length !== 1 ? 's' : ''}, {productTotal} products)
                               </span>
                             </button>
-                            {getCategoryForStyle(styleCode) && (
-                              <div
-                                className="flex items-center gap-2 shrink-0 sm:ml-0"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <label className="text-xs text-slate-500 whitespace-nowrap">
-                                  {METAL_TABS.find((t) => t.key === selectedMetal)?.label ?? selectedMetal} discount %
-                                </label>
-                                <input
-                                  key={`${getCategoryForStyle(styleCode)?.id ?? styleCode}-${selectedMetal}`}
-                                  type="number"
-                                  min={0}
-                                  max={100}
-                                  step={0.5}
-                                  defaultValue={getCategoryDiscountForStyle(styleCode, selectedMetal)}
-                                  onBlur={(e) => {
-                                    const cat = getCategoryForStyle(styleCode)
-                                    if (!cat) return
-                                    const v = parseFloat(e.target.value)
-                                    if (!isNaN(v) && v >= 0 && v <= 100) {
-                                      void handleCategoryDiscountSave(cat.id, v, selectedMetal)
-                                    }
-                                  }}
-                                  className="w-14 sm:w-16 px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 text-sm text-right focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50"
-                                  disabled={savingDiscount === getCategoryForStyle(styleCode)?.id}
-                                />
-                              </div>
-                            )}
+                            <div className="flex flex-wrap items-center gap-2 shrink-0 sm:ml-auto">
+                              {catRow ? (
+                                <button
+                                  type="button"
+                                  title="Delete style and all SKUs"
+                                  disabled={!!catalogDeleting}
+                                  onClick={() => void handleDeleteCategory(catRow, styleCode)}
+                                  className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-lg border border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20 touch-manipulation disabled:opacity-50"
+                                >
+                                  {deletingStyle ? (
+                                    <Loader2 className="size-4 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="size-4" />
+                                  )}
+                                </button>
+                              ) : null}
+                              {catRow ? (
+                                <div
+                                  className="flex items-center gap-2"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <label className="text-xs text-slate-500 whitespace-nowrap">
+                                    {METAL_TABS.find((t) => t.key === selectedMetal)?.label ?? selectedMetal}{' '}
+                                    discount %
+                                  </label>
+                                  <input
+                                    key={`${catRow.id}-${selectedMetal}`}
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    step={0.5}
+                                    defaultValue={getCategoryDiscountForStyle(styleCode, selectedMetal)}
+                                    onBlur={(e) => {
+                                      const v = parseFloat(e.target.value)
+                                      if (!isNaN(v) && v >= 0 && v <= 100) {
+                                        void handleCategoryDiscountSave(catRow.id, v, selectedMetal)
+                                      }
+                                    }}
+                                    className="w-14 sm:w-16 px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 text-sm text-right focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50"
+                                    disabled={savingDiscount === catRow.id}
+                                  />
+                                </div>
+                              ) : null}
+                            </div>
                           </div>
                           {isStyleOpen && (
                             <div className="border-t border-white/10">
-                              {skus.map(({ sku, products: prods }) => {
+                              {skus.map(({ sku, products: prods, subcategoryId, emptySku }) => {
                                 const skuKey = `${styleKey}::${sku}`
                                 const isSkuOpen = expandedSkus.has(skuKey)
+                                const deletingSku =
+                                  subcategoryId && catalogDeleting === `sub-${subcategoryId}`
                                 return (
                                   <div
                                     key={skuKey}
                                     className="border-t border-white/5"
                                   >
-                                    <button
-                                      onClick={() => toggleSku(skuKey)}
-                                      className="w-full flex items-center gap-2 pl-8 sm:pl-12 pr-4 py-3 text-left hover:bg-white/5 transition-colors"
-                                    >
-                                      {isSkuOpen ? (
-                                        <ChevronDown className="size-4 text-slate-400 shrink-0" />
-                                      ) : (
-                                        <ChevronRight className="size-4 text-slate-400 shrink-0" />
-                                      )}
-                                      <span className="text-slate-300 font-medium">
-                                        {sku}
-                                      </span>
-                                      <span className="text-slate-500 text-sm">
-                                        ({prods.length} items)
-                                      </span>
-                                    </button>
+                                    <div className="flex items-center gap-1 pl-6 sm:pl-10 pr-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleSku(skuKey)}
+                                        className="flex flex-1 items-center gap-2 py-3 text-left hover:bg-white/5 transition-colors touch-manipulation min-h-[44px]"
+                                      >
+                                        {isSkuOpen ? (
+                                          <ChevronDown className="size-4 text-slate-400 shrink-0" />
+                                        ) : (
+                                          <ChevronRight className="size-4 text-slate-400 shrink-0" />
+                                        )}
+                                        <span className="text-slate-300 font-medium">
+                                          {sku}
+                                        </span>
+                                        {emptySku ? (
+                                          <span className="text-[10px] text-slate-500">0 items</span>
+                                        ) : (
+                                          <span className="text-slate-500 text-sm">
+                                            ({prods.length} items)
+                                          </span>
+                                        )}
+                                      </button>
+                                      {subcategoryId ? (
+                                        <button
+                                          type="button"
+                                          title="Delete this SKU row"
+                                          disabled={!!catalogDeleting}
+                                          onClick={() =>
+                                            void handleDeleteSubcategory(subcategoryId, sku, styleCode)
+                                          }
+                                          className="min-h-[40px] min-w-[40px] inline-flex shrink-0 items-center justify-center rounded-lg border border-red-500/30 text-red-400/90 hover:bg-red-500/10 touch-manipulation disabled:opacity-50"
+                                        >
+                                          {deletingSku ? (
+                                            <Loader2 className="size-3.5 animate-spin" />
+                                          ) : (
+                                            <Trash2 className="size-3.5" />
+                                          )}
+                                        </button>
+                                      ) : null}
+                                    </div>
                                     {isSkuOpen && (
                                       <div className="pl-10 sm:pl-16 pr-4 pb-4 space-y-2">
+                                        {prods.length === 0 ? (
+                                          <p className="text-xs text-slate-500 py-2">
+                                            No products in this SKU yet.
+                                          </p>
+                                        ) : null}
                                         {prods.map((p) => (
                                           <div
                                             key={p.barcode || p.id}

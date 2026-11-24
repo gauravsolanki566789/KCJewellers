@@ -160,6 +160,7 @@ const {
     resolveCategoryDiscountPct,
     resolveCategoryDiscountForMetalTab,
     CATALOG_METAL_KEYS,
+    parseCatalogMetalsArray,
 } = require('./services/catalogMetalFamily');
 const {
     sortCatalogProductsByDesignGroupOrder,
@@ -9154,10 +9155,18 @@ app.post('/api/reseller/sms-settings/test-otp', requireSharedCatalogCreator, req
 // Admin: list all catalog categories with publish status
 app.get('/api/admin/catalog', isAdminStrict, async (req, res) => {
     try {
+        try {
+            await query(
+                `ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS catalog_metals JSONB NOT NULL DEFAULT '[]'::jsonb`,
+            );
+        } catch {
+            /* ignore */
+        }
         const cats = await query(`
             SELECT id, name, slug, image_url, COALESCE(is_published, false) as is_published,
                    COALESCE(discount_percentage, 0)::float AS discount_percentage,
-                   COALESCE(discount_by_metal, '{}'::jsonb) AS discount_by_metal
+                   COALESCE(discount_by_metal, '{}'::jsonb) AS discount_by_metal,
+                   COALESCE(catalog_metals, '[]'::jsonb) AS catalog_metals
             FROM web_categories ORDER BY sort_order, name
         `);
         /** Per-style metal presence (matches storefront filtering; not limited by /api/products LIMIT). */
@@ -9252,6 +9261,7 @@ app.get('/api/admin/catalog', isAdminStrict, async (req, res) => {
             };
             categories.push({
                 ...c,
+                catalog_metals: parseCatalogMetalsArray(c.catalog_metals),
                 product_count: Number(m.product_count ?? 0) || 0,
                 gold_product_count: Number(m.gold_product_count ?? 0) || 0,
                 silver_product_count: Number(m.silver_product_count ?? 0) || 0,
@@ -9427,6 +9437,77 @@ app.put('/api/admin/catalog/subcategory/:subId/retail-tags', requireJson, isAdmi
             console.warn('retail tag columns may be missing — run migrations/037_subcategory_retail_tags.sql');
         }
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Admin: delete catalogue style (category) — removes SKUs and products under it.
+app.delete('/api/admin/catalog/category/:id', isAdminStrict, async (req, res) => {
+    try {
+        const catId = parseInt(String(req.params.id), 10);
+        if (!Number.isFinite(catId) || catId <= 0) {
+            return res.status(400).json({ error: 'Invalid category id' });
+        }
+        const subs = await query('SELECT id FROM web_subcategories WHERE category_id = $1', [catId]);
+        const subIds = subs.map((s) => s.id).filter((id) => Number.isFinite(id));
+        let productsRemoved = 0;
+        if (subIds.length) {
+            const del = await query(
+                `DELETE FROM web_products WHERE subcategory_id = ANY($1::int[]) RETURNING id`,
+                [subIds],
+            );
+            productsRemoved = del.length;
+            await query('DELETE FROM web_subcategories WHERE category_id = $1', [catId]);
+        }
+        const removed = await query('DELETE FROM web_categories WHERE id = $1 RETURNING id', [catId]);
+        if (!removed.length) {
+            return res.status(404).json({ error: 'Category not found' });
+        }
+        res.json({
+            success: true,
+            categoryId: catId,
+            subcategoriesRemoved: subIds.length,
+            productsRemoved,
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message || 'Failed to delete category' });
+    }
+});
+
+// Admin: delete one SKU row (subcategory).
+app.delete('/api/admin/catalog/subcategory/:subId', isAdminStrict, async (req, res) => {
+    try {
+        const subId = parseInt(String(req.params.subId), 10);
+        if (!Number.isFinite(subId) || subId <= 0) {
+            return res.status(400).json({ error: 'Invalid subcategory id' });
+        }
+        const delProds = await query(
+            'DELETE FROM web_products WHERE subcategory_id = $1 RETURNING id',
+            [subId],
+        );
+        const removed = await query('DELETE FROM web_subcategories WHERE id = $1 RETURNING category_id', [
+            subId,
+        ]);
+        if (!removed.length) {
+            return res.status(404).json({ error: 'Subcategory not found' });
+        }
+        const catId = removed[0].category_id;
+        const left = await query(
+            'SELECT COUNT(*)::int AS c FROM web_subcategories WHERE category_id = $1',
+            [catId],
+        );
+        let categoryRemoved = false;
+        if ((left[0]?.c || 0) === 0) {
+            const catDel = await query('DELETE FROM web_categories WHERE id = $1 RETURNING id', [catId]);
+            categoryRemoved = catDel.length > 0;
+        }
+        res.json({
+            success: true,
+            subcategoryId: subId,
+            productsRemoved: delProds.length,
+            categoryRemoved,
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message || 'Failed to delete subcategory' });
     }
 });
 

@@ -81,6 +81,16 @@ function resolveCategoryDiscountPct(categoryRow, metalType) {
     return 0;
 }
 
+function parseCatalogMetalsArray(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const entry of raw) {
+        const m = String(entry || '').trim().toLowerCase();
+        if (CATALOG_METAL_KEYS.includes(m) && !out.includes(m)) out.push(m);
+    }
+    return out;
+}
+
 function resolveCategoryDiscountForMetalTab(categoryRow, metalKey) {
     const byMetal = parseDiscountByMetal(categoryRow?.discount_by_metal);
     if (byMetal[metalKey] != null) return byMetal[metalKey];
@@ -94,6 +104,7 @@ function resolveCategoryDiscountForMetalTab(categoryRow, metalKey) {
 
 module.exports = {
     CATALOG_METAL_KEYS,
+    parseCatalogMetalsArray,
     classifyCatalogMetalFamily,
     productMatchesCatalogMetal,
     sqlCatalogMetalFamilyExpr,

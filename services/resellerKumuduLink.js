@@ -10,6 +10,7 @@ const path = require('path');
 const { upsertWebProductFromSyncItem, styleSlugFromCode } = require('./upsertWebProductFromSyncItem');
 const { classifyCatalogMetalFamily } = require('./catalogMetalFamily');
 const { parseAllowedCategoryMetals } = require('./resellerCatalogScope');
+const { parseCatalogMetalsArray, CATALOG_METAL_KEYS } = require('./catalogMetalFamily');
 const { productImageFileExists } = require('./productImagePaths');
 const { slugPart } = require('./productVariantIdentity');
 
@@ -1862,6 +1863,23 @@ async function ensureStyleAndSku(query, mapped, { publish = true } = {}) {
     };
 }
 
+async function appendWebCategoryCatalogMetal(query, catId, metalFamily) {
+    if (!catId) return;
+    const family = String(metalFamily || '').trim().toLowerCase();
+    if (!CATALOG_METAL_KEYS.includes(family)) return;
+    const rows = await query(
+        `SELECT catalog_metals FROM web_categories WHERE id = $1`,
+        [catId],
+    );
+    if (!rows[0]) return;
+    const cur = parseCatalogMetalsArray(rows[0].catalog_metals);
+    if (cur.includes(family)) return;
+    await query(
+        `UPDATE web_categories SET catalog_metals = $2::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [catId, JSON.stringify([...cur, family])],
+    );
+}
+
 async function grantCategoryToReseller(query, resellerUserId, catId, metalType) {
     if (!catId) return;
     const rows = await query(
@@ -1891,6 +1909,7 @@ async function grantCategoryToReseller(query, resellerUserId, catId, metalType) 
             metals[key] = [...cur, family];
             changed = true;
         }
+        await appendWebCategoryCatalogMetal(query, catId, family);
     }
     if (!changed) return;
     if (nextIds) {

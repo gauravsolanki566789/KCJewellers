@@ -3,6 +3,7 @@ import {
   productMatchesCatalogMetal,
   type CatalogMetalKey,
 } from '@/lib/catalog-metal-family'
+import { parseCatalogMetalsArray, categoryDeclaresMetal } from '@/lib/catalog-category-metals'
 
 export type AllowedCategoryMetals = Partial<Record<number, CatalogMetalKey[]>>
 
@@ -110,22 +111,37 @@ export function expandResellerCategoryScopes(cat: {
   has_silver?: boolean
   has_diamond?: boolean
   has_gifting?: boolean
+  catalog_metals?: CatalogMetalKey[] | null
 }): ResellerCategoryScopeRow[] {
+  const countFor = (metal: CatalogMetalKey) => {
+    if (metal === 'gold') return cat.gold_product_count ?? 0
+    if (metal === 'silver') return cat.silver_product_count ?? 0
+    if (metal === 'diamond') return cat.diamond_product_count ?? 0
+    return cat.gifting_product_count ?? 0
+  }
+
   const parts: { metal: CatalogMetalKey; count: number }[] = []
-  if (cat.has_gifting) {
-    parts.push({ metal: 'gifting', count: cat.gifting_product_count ?? 0 })
+  const push = (metal: CatalogMetalKey) => {
+    if (parts.some((p) => p.metal === metal)) return
+    parts.push({ metal, count: countFor(metal) })
   }
-  if (cat.has_gold) {
-    parts.push({ metal: 'gold', count: cat.gold_product_count ?? 0 })
+
+  if (cat.has_gifting) push('gifting')
+  if (cat.has_gold) push('gold')
+  if (cat.has_silver) push('silver')
+  if (cat.has_diamond) push('diamond')
+  for (const metal of parseCatalogMetalsArray(cat.catalog_metals)) {
+    push(metal)
   }
-  if (cat.has_silver) {
-    parts.push({ metal: 'silver', count: cat.silver_product_count ?? 0 })
-  }
-  if (cat.has_diamond) {
-    parts.push({ metal: 'diamond', count: cat.diamond_product_count ?? 0 })
-  }
+
   const active = parts.filter((p) => p.count > 0)
-  const list = active.length ? active : parts
+  let list = active.length ? active : parts
+  if (list.length === 0) {
+    for (const metal of CATALOG_METAL_KEYS) {
+      if (categoryDeclaresMetal(cat, metal)) push(metal)
+    }
+    list = parts
+  }
 
   if (list.length <= 1) {
     const metal = list[0]?.metal ?? 'gold'
