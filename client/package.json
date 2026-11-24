@@ -6,7 +6,7 @@
     "dev": "next dev -p 3001",
     "build:exhibition-billing": "node scripts/build-exhibition-billing-core.mjs",
     "build": "npm run build:exhibition-billing && next build --webpack",
-    "start": "next start",
+    "start": "next start -p 3001",
     "lint": "eslint",
     "og:image": "node scripts/optimize-og-image.mjs"
   },

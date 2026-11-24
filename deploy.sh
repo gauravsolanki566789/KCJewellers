@@ -99,6 +99,15 @@ fi
 
 if [ "$CLIENT_BUILD" = "0" ]; then
   export KC_SKIP_FRONTEND_STOP=1
+  if [ ! -f client/.next/BUILD_ID ]; then
+    echo "⚠️  client/.next is missing or incomplete — forcing client build."
+    CLIENT_BUILD=1
+    CLIENT_INSTALL=0
+    if [ ! -d client/node_modules ]; then
+      CLIENT_INSTALL=1
+    fi
+    unset KC_SKIP_FRONTEND_STOP
+  fi
 fi
 
 echo ""
@@ -183,6 +192,9 @@ if command -v pm2 >/dev/null 2>&1; then
   pm2_start_if_stopped kc-frontend
   pm2_start_if_stopped kc-backend
   pm2_start_if_stopped gaurav-app
+  if command -v node >/dev/null 2>&1 && [ -f scripts/ensure-frontend-after-deploy.js ]; then
+    node scripts/ensure-frontend-after-deploy.js
+  fi
 else
   echo "   pm2 not found — skip restart."
 fi
