@@ -889,22 +889,29 @@ async function buildCustomerAccount(query, resellerUserId, opts) {
 
     let transactionsOut = withGold;
     if (hasFromFilter) {
-        transactionsOut = [
-            {
-                date: from,
-                kind: 'opening',
-                ref: '—',
-                description: 'Opening balance',
-                debit: 0,
-                credit: 0,
-                balance_inr: openingInr,
-                balance_metal_gm: openingMetalGm,
-                weight_gm: 0,
-                debit_metal_gm: 0,
-                credit_metal_gm: 0,
-            },
-            ...withGold,
-        ];
+        const hasOpeningEntry = orderedRows.some(
+            (r) => r.kind === 'opening' || r.kind === 'opening_balance',
+        );
+        const carriedInr = Math.abs(openingInr) >= 0.005;
+        const carriedMetal = Math.abs(openingMetalGm) >= 0.0005;
+        if (carriedInr || carriedMetal) {
+            transactionsOut = [
+                {
+                    date: from,
+                    kind: 'opening',
+                    ref: '—',
+                    description: hasOpeningEntry ? 'Balance brought forward' : 'Opening balance',
+                    debit: 0,
+                    credit: 0,
+                    balance_inr: openingInr,
+                    balance_metal_gm: openingMetalGm,
+                    weight_gm: 0,
+                    debit_metal_gm: 0,
+                    credit_metal_gm: 0,
+                },
+                ...withGold,
+            ];
+        }
     }
 
     return {
@@ -1035,7 +1042,8 @@ async function ledgerOpeningBeforeDay(query, resellerUserId, day, laneView) {
     let entrySql = `SELECT entry_type, amount_inr, metal_gm, weight_kg, payment_mode, narration, reference_no
                     FROM reseller_erp_ledger_entries
                     WHERE reseller_user_id = $1 AND entry_date < $2::date
-                      AND is_suspense = false AND ledger_scope = $3`;
+                      AND is_suspense = false AND ledger_scope = $3
+                      AND entry_type NOT IN ('opening', 'opening_balance')`;
     if (fromDate) {
         entryParams.push(fromDate);
         entrySql += ` AND entry_date >= $4::date`;
@@ -1241,7 +1249,8 @@ async function buildDaybook(query, resellerUserId, opts) {
                     LEFT JOIN reseller_erp_purchase_vouchers pv ON pv.id = e.pv_id
                     WHERE e.reseller_user_id = $1
                       AND e.entry_date = $2::date
-                      AND e.is_suspense = false`;
+                      AND e.is_suspense = false
+                      AND e.entry_type NOT IN ('opening', 'opening_balance')`;
     if (laneView) {
         entrySql += ` AND (
             e.ledger_scope = 'lane'

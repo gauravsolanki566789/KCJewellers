@@ -1378,6 +1378,9 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
         params: { lane_view: laneMode ? '1' : '0' },
       })
       appAlert('Shop opening deleted.', 'success')
+      setShopOpeningInr('')
+      setShopOpeningGm('')
+      setShopOpeningSide('hold')
       await reload()
     } catch (e) {
       alert(erpErr(e))
@@ -1895,6 +1898,19 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
   }, [dayBook])
 
   const dayBookRows = dayBook?.transactions ?? []
+
+  const shopOpeningSaved = !!dayBook?.summary.shop_opening
+  const showShopOpeningSetup = canEditLedgerDate && daybookMetalView && !shopOpeningSaved
+  const showShopOpeningJainav = canDeleteRecords && daybookMetalView && shopOpeningSaved
+
+  useEffect(() => {
+    const so = dayBook?.summary.shop_opening
+    if (!so || tab !== 'daybook' || !canDeleteRecords) return
+    setShopOpeningInr(so.opening_inr != null && so.opening_inr !== 0 ? String(so.opening_inr) : '')
+    const signed = Number(so.opening_metal_gm) || 0
+    setShopOpeningGm(Math.abs(signed) >= 0.0005 ? String(Math.abs(signed)) : '')
+    setShopOpeningSide(signed < 0 ? 'hold' : 'owe')
+  }, [dayBook?.summary.shop_opening, tab, canDeleteRecords])
 
   const renderPayCustomerField = () => (
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55 sm:col-span-2">
@@ -3329,27 +3345,10 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
               Unassigned only
             </label>
           </div>
-          {canEditLedgerDate && daybookMetalView ? (
+          {showShopOpeningSetup ? (
             <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/30 p-3">
-              <p className="text-xs font-semibold text-[#1a1814]">Shop opening (admin, once)</p>
-              <p className="mt-1 text-[11px] leading-relaxed text-[var(--color-jewelry-black,#1a1814)]/60">
-                Set the morning stock for this date. Every later day uses the previous closing as opening. Delete only
-                in Jainav mode.
-              </p>
-              {dayBook?.summary.shop_opening ? (
-                <p className="mt-2 text-[11px] font-medium text-[#1a1814]">
-                  Current opening from {formatErpDateDdMmYyyy(dayBook.summary.shop_opening.opening_date)}:{' '}
-                  {formatErpInr(dayBook.summary.shop_opening.opening_inr)} ·{' '}
-                  {formatMetalGm(Math.abs(dayBook.summary.shop_opening.opening_metal_gm || 0)) || '0.000 g'}
-                  {dayBook.summary.shop_opening.opening_metal_gm < 0
-                    ? ' (shop holds)'
-                    : dayBook.summary.shop_opening.opening_metal_gm > 0
-                      ? ' (customers owe)'
-                      : ''}
-                </p>
-              ) : (
-                <p className="mt-2 text-[11px] text-[var(--color-jewelry-black,#1a1814)]/50">No shop opening saved yet.</p>
-              )}
+              <p className="text-xs font-semibold text-[#1a1814]">Shop opening</p>
+              <p className="mt-2 text-[11px] text-[var(--color-jewelry-black,#1a1814)]/50">No shop opening saved yet.</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
                   Opening ₹
@@ -3386,11 +3385,64 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                   <button type="button" className={erpBtnPrimary} disabled={busy} onClick={() => void saveShopOpening()}>
                     Save opening
                   </button>
-                  {canDeleteRecords && dayBook?.summary.shop_opening ? (
-                    <button type="button" className={erpBtnGhost} disabled={busy} onClick={() => void deleteShopOpening()}>
-                      Delete
-                    </button>
-                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {showShopOpeningJainav ? (
+            <div className="rounded-xl border border-amber-200/80 bg-amber-50/40 p-3">
+              <p className="text-xs font-semibold text-[#1a1814]">Shop opening (Jainav)</p>
+              {dayBook?.summary.shop_opening ? (
+                <p className="mt-2 text-[11px] font-medium text-[#1a1814]">
+                  Active from {formatErpDateDdMmYyyy(dayBook.summary.shop_opening.opening_date)}:{' '}
+                  {formatErpInr(dayBook.summary.shop_opening.opening_inr)} ·{' '}
+                  {formatMetalGm(Math.abs(dayBook.summary.shop_opening.opening_metal_gm || 0)) || '0.000 g'}
+                  {dayBook.summary.shop_opening.opening_metal_gm < 0
+                    ? ' (shop holds)'
+                    : dayBook.summary.shop_opening.opening_metal_gm > 0
+                      ? ' (customers owe)'
+                      : ''}
+                </p>
+              ) : null}
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                  Opening ₹
+                  <input
+                    className={`${erpInputCls} mt-1 tabular-nums`}
+                    inputMode="decimal"
+                    value={shopOpeningInr}
+                    onChange={(e) => setShopOpeningInr(e.target.value.replace(/[^\d.-]/g, ''))}
+                    placeholder="0"
+                  />
+                </label>
+                <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                  Opening metal (g)
+                  <input
+                    className={`${erpInputCls} mt-1 tabular-nums`}
+                    inputMode="decimal"
+                    value={shopOpeningGm}
+                    onChange={(e) => setShopOpeningGm(e.target.value.replace(/[^\d.]/g, ''))}
+                    placeholder="e.g. 1000"
+                  />
+                </label>
+                <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                  Metal meaning
+                  <select
+                    className={`${erpInputCls} mt-1`}
+                    value={shopOpeningSide}
+                    onChange={(e) => setShopOpeningSide(e.target.value as 'hold' | 'owe')}
+                  >
+                    <option value="hold">Shop holds (you owe customers)</option>
+                    <option value="owe">Customers owe shop</option>
+                  </select>
+                </label>
+                <div className="flex flex-wrap items-end gap-2">
+                  <button type="button" className={erpBtnPrimary} disabled={busy} onClick={() => void saveShopOpening()}>
+                    Update opening
+                  </button>
+                  <button type="button" className={erpBtnGhost} disabled={busy} onClick={() => void deleteShopOpening()}>
+                    Delete
+                  </button>
                 </div>
               </div>
             </div>
