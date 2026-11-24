@@ -3,9 +3,10 @@
  */
 
 const { randomUUID } = require('crypto');
-const { requireJainavUnlockedAdmin } = require('./resellerErpOperators');
+const { requireJainavUnlockedAdmin, isErpShopAdmin } = require('./resellerErpOperators');
 const { loadJewelleryLedgerMetalEnabled } = require('./erpJewelleryLedgerSettings');
 const { roundMetalGm, normalizeJewelleryMetal } = require('./erpLedgerMetal');
+const { istTodayIso } = require('./erpDateNormalize');
 
 const PV_CATEGORY_VALUES = new Set(['metal', 'item', 'repair', 'return', 'sample', 'non_metal']);
 
@@ -73,6 +74,16 @@ function parseDateOrNull(v) {
     return s;
 }
 
+async function coercePvEntryDate(req, query, requested, existingDate) {
+    const today = istTodayIso();
+    const parsed = parseDateOrNull(requested);
+    const kept = parseDateOrNull(existingDate);
+    if (isErpShopAdmin(req)) return parsed || kept || today;
+    const metalOn = await loadJewelleryLedgerMetalEnabled(query, req.user.id);
+    if (metalOn) return kept || today;
+    return parsed || kept || today;
+}
+
 async function ensurePurchaseSchema(pool) {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS reseller_erp_purchase_vouchers (
@@ -135,6 +146,32 @@ function computePvMetalRatePerGm(amountInr, weightGm) {
     const gm = Number(weightGm);
     if (!Number.isFinite(amt) || amt <= 0 || !Number.isFinite(gm) || gm <= 0) return null;
     return Math.round((amt / gm) * 10000) / 10000;
+}
+
+/** Keep PV holds / pending in sync when the linked ledger metal weight is edited. */
+async function syncPurchaseVoucherWeightFromLedger(query, resellerUserId, pvId, metalGm, amountInr) {
+    if (!pvId) return null;
+    const gm = roundMetalGm(Math.abs(Number(metalGm) || 0));
+    if (!(gm >= 0.0005)) return null;
+    const kg = gm / 1000;
+    const pvRows = await query(
+        `SELECT id, amount_inr FROM reseller_erp_purchase_vouchers WHERE id = $1 AND reseller_user_id = $2`,
+        [pvId, resellerUserId],
+    );
+    if (!pvRows.length) return null;
+    const amt =
+        amountInr != null && Number.isFinite(Number(amountInr))
+            ? Number(amountInr)
+            : Number(pvRows[0].amount_inr) || 0;
+    const rate = computePvMetalRatePerGm(amt, gm);
+    const updated = await query(
+        `UPDATE reseller_erp_purchase_vouchers
+         SET weight_kg = $1, metal_rate_per_gm = $2, updated_at = NOW()
+         WHERE id = $3 AND reseller_user_id = $4
+         RETURNING *`,
+        [kg, rate, pvId, resellerUserId],
+    );
+    return updated[0] || null;
 }
 
 function mapPv(row) {
@@ -486,7 +523,7 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
                 if (amount == null || amount <= 0) {
                     return res.status(400).json({ error: 'Valid amount required' });
                 }
-                const entryDate = parseDateOrNull(req.body.entry_date) || new Date().toISOString().slice(0, 10);
+                const entryDate = await coercePvEntryDate(req, query, req.body.entry_date);
                 const vendorName = trimStr(req.body.vendor_name, 255);
                 const vendorBillRef = trimStr(req.body.vendor_bill_ref, 120);
                 const paymentMode = trimStr(req.body.payment_mode, 32).toLowerCase() || 'neft';
@@ -538,7 +575,8 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
             let amount = parseAmount(req.body.amount_inr);
             const weightKg = resolvePurchaseWeightKg(req.body);
             if (weightKg == null || weightKg <= 0) return res.status(400).json({ error: 'Valid weight (grams) required' });
-            const paymentMode = trimStr(req.body.payment_mode, 32).toLowerCase() || 'neft';
+            const paymentMode =
+                trimStr(req.body.payment_mode, 32).toLowerCase() || (metalLedgerOn ? 'metal' : 'neft');
             const weightGm = roundMetalGm(weightKg * 1000);
             if (metalLedgerOn && (paymentMode === 'metal' || amount == null || amount <= 0)) {
                 amount = amount != null && amount > 0 ? amount : 0;
@@ -549,7 +587,7 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
             const pvNumber =
                 trimStr(req.body.pv_number, 32).toUpperCase() ||
                 (await nextPvNumber(query, req.user.id));
-            const entryDate = parseDateOrNull(req.body.entry_date) || new Date().toISOString().slice(0, 10);
+            const entryDate = await coercePvEntryDate(req, query, req.body.entry_date);
             const vendorName = trimStr(req.body.vendor_name, 255);
             const vendorBillRef = trimStr(req.body.vendor_bill_ref, 120);
             const metalType = trimStr(req.body.metal_type, 32);
@@ -732,6 +770,7 @@ module.exports = {
     assertPvAcceptsAddedWeight,
     mapPv,
     deletePurchaseVoucherById,
+    syncPurchaseVoucherWeightFromLedger,
     syncPvReceivedWeightFromStock,
     syncPvReceivedWeightForBatch,
 };

@@ -207,7 +207,10 @@ function ledgerEntryLedgerAmounts(entryType, amountInr) {
     let credit_inr = 0;
     if (creditTypes.has(entryType)) credit_inr = amt;
     else if (entryType === 'payment_out' || entryType === 'expense' || entryType === 'salary') debit_inr = amt;
-    else if (entryType === 'adjustment') {
+    else if (entryType === 'opening' || entryType === 'opening_balance') {
+        if (amt >= 0) credit_inr = amt;
+        else debit_inr = Math.abs(amt);
+    } else if (entryType === 'adjustment') {
         if (amt >= 0) credit_inr = amt;
         else debit_inr = Math.abs(amt);
     }
@@ -767,6 +770,11 @@ async function buildCustomerAccount(query, resellerUserId, opts) {
             if (amt >= 0) credit = amt;
             else debit = Math.abs(amt);
         }
+        if (p.entry_type === 'opening' || p.entry_type === 'opening_balance') {
+            const amt = Number(p.amount_inr) || 0;
+            if (amt >= 0) credit = amt;
+            else debit = Math.abs(amt);
+        }
         const metalGmDisplay = metalGmFromLedgerRow(p);
         const metalGmBal = metalGmForRunningBalance(p);
         let metalDc = metalDebitCreditFromLedgerEntry(p.entry_type, metalGmBal, p.narration);
@@ -976,28 +984,105 @@ function billSessionMetalConversion(session, billType) {
     };
 }
 
+async function loadShopDaybookOpening(query, resellerUserId, ledgerScope) {
+    try {
+        const rows = await query(
+            `SELECT opening_date, opening_inr, opening_metal_gm, jewellery_metal
+             FROM reseller_erp_daybook_openings
+             WHERE reseller_user_id = $1 AND ledger_scope = $2
+             LIMIT 1`,
+            [resellerUserId, ledgerScope],
+        );
+        if (!rows.length) return null;
+        const r = rows[0];
+        return {
+            opening_date: normDateIso(r.opening_date) || String(r.opening_date || '').slice(0, 10),
+            opening_inr: Math.round((Number(r.opening_inr) || 0) * 100) / 100,
+            opening_metal_gm: roundMetalGm(r.opening_metal_gm),
+            jewellery_metal: r.jewellery_metal || null,
+        };
+    } catch (e) {
+        if (String(e.message || '').includes('does not exist')) return null;
+        throw e;
+    }
+}
+
 async function ledgerOpeningBeforeDay(query, resellerUserId, day, laneView) {
     const scope = laneView ? 'lane' : 'official';
-    const rows = await query(
-        `SELECT entry_type, amount_inr, metal_gm
-         FROM reseller_erp_ledger_entries
-         WHERE reseller_user_id = $1 AND entry_date < $2::date
-           AND is_suspense = false AND ledger_scope = $3`,
-        [resellerUserId, day, scope],
-    );
+    const shop = await loadShopDaybookOpening(query, resellerUserId, scope);
+    const shopDate = shop?.opening_date || null;
+
     let inr = 0;
     let metal = 0;
-    for (const e of rows) {
-        const amt = Number(e.amount_inr) || 0;
-        const type = String(e.entry_type || '');
-        if (['payment_in', 'bill_advance', 'suspense_in'].includes(type)) inr -= amt;
-        else if (['payment_out', 'purchase', 'expense', 'salary'].includes(type)) inr += amt;
-        else if (type === 'adjustment') inr -= amt;
-        metal += Number(e.metal_gm) || 0;
+
+    if (shop && shopDate) {
+        if (shopDate > day) {
+            return { opening_inr: 0, opening_metal_gm: 0, shop_opening: shop };
+        }
+        inr += Number(shop.opening_inr) || 0;
+        metal += Number(shop.opening_metal_gm) || 0;
+        if (shopDate === day) {
+            return {
+                opening_inr: Math.round(inr * 100) / 100,
+                opening_metal_gm: roundMetalGm(metal),
+                shop_opening: shop,
+            };
+        }
     }
+
+    const fromDate = shopDate && shopDate < day ? shopDate : null;
+    const entryParams = [resellerUserId, day, scope];
+    let entrySql = `SELECT entry_type, amount_inr, metal_gm, weight_kg, payment_mode, narration, reference_no
+                    FROM reseller_erp_ledger_entries
+                    WHERE reseller_user_id = $1 AND entry_date < $2::date
+                      AND is_suspense = false AND ledger_scope = $3`;
+    if (fromDate) {
+        entryParams.push(fromDate);
+        entrySql += ` AND entry_date >= $4::date`;
+    }
+    const rows = await query(entrySql, entryParams);
+    for (const e of rows) {
+        const type = String(e.entry_type || '');
+        const dc = ledgerEntryLedgerAmounts(type, e.amount_inr);
+        inr += dc.debit_inr - dc.credit_inr;
+        const gm = metalGmFromLedgerRow(e);
+        const mdc = metalDebitCreditFromLedgerEntry(type, gm, e.narration);
+        metal += mdc.debit_metal_gm - mdc.credit_metal_gm;
+    }
+
+    if (!laneView) {
+        const billParams = [resellerUserId, day];
+        let billSql = `SELECT bill_type, total_inr, lines_json, session_json
+                       FROM reseller_erp_bills
+                       WHERE reseller_user_id = $1 AND bill_date < $2::date
+                         AND bill_type IN ('sale', 'credit', 'debit', 'sales_return')
+                         AND LOWER(status) IN ('completed', 'paid', 'final', 'issued')
+                         AND COALESCE(session_json->>'ledgerScope', 'official') <> 'lane'`;
+        if (fromDate) {
+            billParams.push(fromDate);
+            billSql += ` AND bill_date >= $3::date`;
+        }
+        const bills = await query(billSql, billParams);
+        for (const b of bills) {
+            const kind = String(b.bill_type || 'sale').toLowerCase();
+            const session = parseJsonObject(b.session_json);
+            const metalConv = billSessionMetalConversion(session, kind);
+            const billTotal = Number(b.total_inr) || 0;
+            const ledgerAmt = metalConv.convertedGm > 0 && !metalConv.isCredit ? 0 : billTotal;
+            const dc = billLedgerAmounts(kind, ledgerAmt);
+            inr += dc.debit_inr - dc.credit_inr;
+            if (metalConv.convertedGm > 0 && !metalConv.isCredit) {
+                metal += metalConv.convertedGm;
+            } else if (metalConv.convertedGm > 0 && metalConv.isCredit) {
+                metal -= metalConv.convertedGm;
+            }
+        }
+    }
+
     return {
         opening_inr: Math.round(inr * 100) / 100,
         opening_metal_gm: roundMetalGm(metal),
+        shop_opening: shop,
     };
 }
 
@@ -1256,6 +1341,7 @@ async function buildDaybook(query, resellerUserId, opts) {
             net_inr: Math.round((received - paid) * 100) / 100,
             opening_balance_inr: opening.opening_inr,
             opening_balance_metal_gm: opening.opening_metal_gm,
+            shop_opening: opening.shop_opening || null,
             total_debit_inr: ledgerCols.total_debit_inr,
             total_credit_inr: ledgerCols.total_credit_inr,
             closing_balance_inr: ledgerCols.closing_balance_inr,
@@ -1678,4 +1764,5 @@ module.exports = {
     compactCustomerName,
     relinkOrphanedCustomerRecords,
     getCustomerBalancesBeforeLedgerEntry,
+    loadShopDaybookOpening,
 };

@@ -107,6 +107,11 @@ type DaybookData = {
     closing_balance_metal_gm?: number
     opening_balance_inr?: number
     opening_balance_metal_gm?: number
+    shop_opening?: {
+      opening_date: string
+      opening_inr: number
+      opening_metal_gm: number
+    } | null
     transaction_count: number
   }
   transactions: DaybookTransaction[]
@@ -379,6 +384,8 @@ const ENTRY_LABELS: Record<string, string> = {
   purchase: 'Purchase (PV)',
   expense: 'Expense',
   salary: 'Salary / staff',
+  opening: 'Opening balance',
+  opening_balance: 'Opening balance',
 }
 
 function todayIso() {
@@ -403,19 +410,19 @@ function rupeesToGrams(amount: string, rate: string): string {
   return (Math.round((a / r) * 1000) / 1000).toFixed(3)
 }
 
-function emptyPaymentForm() {
+function emptyPaymentForm(metalLedger = false) {
   return {
     entry_date: todayIso(),
     entry_type: 'payment_in' as string,
     amount_inr: '',
     customer_id: '',
-    payment_mode: 'neft' as string,
+    payment_mode: (metalLedger ? 'metal' : 'neft') as string,
     reference_no: '',
     bank_name: '',
     counterparty_name: '',
     narration: '',
     is_suspense: false,
-    currency: 'inr' as 'inr' | 'metal',
+    currency: (metalLedger ? 'metal' : 'inr') as 'inr' | 'metal',
     jewellery_metal: 'silver' as 'silver' | 'gold',
     metal_kind: 'received' as
       | 'received'
@@ -424,13 +431,16 @@ function emptyPaymentForm() {
       | 'fixed_asset_issue'
       | 'apply'
       | 'mc_adjust'
-      | 'to_cash',
+      | 'to_cash'
+      | 'opening_credit'
+      | 'opening_debit',
     metal_gm: '',
     metal_rate: '',
     metal_value_offset_inr: false,
     gross_wt_gm: '',
     metal_pct: '',
     convert_inr_to_metal: false,
+    opening_side: 'credit' as 'credit' | 'debit',
   }
 }
 
@@ -451,7 +461,7 @@ function emptyInlineDraft() {
   }
 }
 
-function emptyPvForm() {
+function emptyPvForm(metalLedger = false) {
   return {
     entry_date: todayIso(),
     vendor_name: '',
@@ -464,7 +474,7 @@ function emptyPvForm() {
     pv_category: '',
     style_code: '',
     sku: '',
-    payment_mode: 'neft',
+    payment_mode: metalLedger ? 'metal' : 'neft',
     narration: '',
     customer_id: '',
   }
@@ -514,7 +524,11 @@ function emptyExpenseForm() {
 export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean }) {
   const { enabled: metalLedgerShop } = useJewelleryLedgerMetalEnabled()
   const daybookMetalView = laneMode || metalLedgerShop
-  const { canDeleteRecords } = useErpOperator()
+  const { canDeleteRecords, canEditLedgerDate } = useErpOperator()
+  const dateLocked = metalLedgerShop && !canEditLedgerDate
+  const dateLockTitle = dateLocked
+    ? 'Employees cannot change the date. Ask an ERP admin.'
+    : undefined
   const [tab, setTab] = useState<LedgerTab>('entries')
   const [draftReady, setDraftReady] = useState(false)
   const [entries, setEntries] = useState<ErpLedgerEntry[]>([])
@@ -565,8 +579,11 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
   const [addingInline, setAddingInline] = useState(false)
   const [inlineDraft, setInlineDraft] = useState(emptyInlineDraft)
   const [employees, setEmployees] = useState<{ id: number; name: string; mobile?: string | null }[]>([])
-  const [pvForm, setPvForm] = useState(emptyPvForm)
+  const [pvForm, setPvForm] = useState(() => emptyPvForm(false))
   const [expenseForm, setExpenseForm] = useState(emptyExpenseForm)
+  const [shopOpeningInr, setShopOpeningInr] = useState('')
+  const [shopOpeningGm, setShopOpeningGm] = useState('')
+  const [shopOpeningSide, setShopOpeningSide] = useState<'hold' | 'owe'>('hold')
   const [newEmployeeName, setNewEmployeeName] = useState('')
   const [payCustomerQ, setPayCustomerQ] = useState('')
   const [payCustomerResults, setPayCustomerResults] = useState<ErpCustomer[]>([])
@@ -623,6 +640,34 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
     }
     setDraftReady(true)
   }, [laneMode])
+
+  useEffect(() => {
+    if (!metalLedgerShop) return
+    const today = todayIso()
+    setForm((f) => {
+      const unused = !f.amount_inr && !f.metal_gm && !f.customer_id
+      if (!unused && f.currency === 'metal') return f
+      return {
+        ...f,
+        currency: unused ? 'metal' : f.currency,
+        payment_mode: unused || f.payment_mode === 'neft' ? 'metal' : f.payment_mode,
+        entry_date: dateLocked ? today : f.entry_date,
+      }
+    })
+    setPvForm((f) => ({
+      ...f,
+      payment_mode: f.payment_mode === 'neft' || !f.payment_mode ? 'metal' : f.payment_mode,
+      entry_date: dateLocked ? today : f.entry_date,
+    }))
+    setExpenseForm((f) => ({
+      ...f,
+      entry_date: dateLocked ? today : f.entry_date,
+    }))
+    setInlineDraft((f) => ({
+      ...f,
+      entry_date: dateLocked ? today : f.entry_date,
+    }))
+  }, [metalLedgerShop, dateLocked])
 
   useEffect(() => {
     if (!draftReady) return
@@ -764,9 +809,9 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
     setTab('entries')
     setImportFiles([])
     setLastBatchId(null)
-    setForm(emptyPaymentForm())
+    setForm(emptyPaymentForm(metalLedgerShop))
     setInlineDraft(emptyInlineDraft())
-    setPvForm(emptyPvForm())
+    setPvForm(emptyPvForm(metalLedgerShop))
     setExpenseForm(emptyExpenseForm())
     setEditingId(null)
     setEditDraft({})
@@ -785,7 +830,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
     setQ('')
     setAccountResetToken((n) => n + 1)
     await reload()
-  }, [laneMode, reload])
+  }, [laneMode, reload, metalLedgerShop])
 
   useEffect(() => {
     void loadCustomers().catch(() => setCustomers([]))
@@ -859,8 +904,20 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
         alert('Enter metal weight in grams')
         return
       }
-    } else if (!isMetal && (!Number.isFinite(amount) || amount <= 0)) {
+    } else if (!isMetal && form.entry_type === 'opening' && (!Number.isFinite(amount) || amount <= 0)) {
+      alert('Enter the opening amount (₹)')
+      return
+    } else if (!isMetal && form.entry_type !== 'opening' && (!Number.isFinite(amount) || amount <= 0)) {
       alert('Enter a valid amount')
+      return
+    }
+    if (
+      (form.metal_kind === 'opening_credit' ||
+        form.metal_kind === 'opening_debit' ||
+        form.entry_type === 'opening') &&
+      !form.customer_id
+    ) {
+      alert('Select a customer to set opening balance')
       return
     }
     setBusy(true)
@@ -881,13 +938,15 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
               ? 'payment_out'
               : 'payment_in'
             : isMetal
-            ? form.metal_kind === 'issued'
-              ? 'payment_out'
-              : form.metal_kind === 'apply' ||
-                  form.metal_kind === 'mc_adjust' ||
-                  form.metal_kind === 'to_cash'
-                ? 'adjustment'
-                : 'payment_in'
+            ? form.metal_kind === 'opening_credit' || form.metal_kind === 'opening_debit'
+              ? 'opening'
+              : form.metal_kind === 'issued'
+                ? 'payment_out'
+                : form.metal_kind === 'apply' ||
+                    form.metal_kind === 'mc_adjust' ||
+                    form.metal_kind === 'to_cash'
+                  ? 'adjustment'
+                  : 'payment_in'
             : form.entry_type,
         amount_inr: Number.isFinite(saveAmount) && saveAmount > 0 ? saveAmount : 0,
         metal_gm: isMetal ? metalGm : undefined,
@@ -911,8 +970,16 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
         narration: saveNarration,
         is_suspense: form.is_suspense,
         ledger_scope: laneMode ? 'lane' : 'official',
+        opening_side:
+          form.entry_type === 'opening' ||
+          form.metal_kind === 'opening_credit' ||
+          form.metal_kind === 'opening_debit'
+            ? form.metal_kind === 'opening_debit' || form.opening_side === 'debit'
+              ? 'debit'
+              : 'credit'
+            : undefined,
       })
-      setForm(emptyPaymentForm())
+      setForm(emptyPaymentForm(metalLedgerShop))
       setPayCustomerQ('')
       setPayCustomerLabel('')
       setPayCustomerResults([])
@@ -1278,6 +1345,47 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
     }
   }
 
+  const saveShopOpening = async () => {
+    const gm = Number(String(shopOpeningGm).replace(/[,gG\s]/g, ''))
+    const inr = Number(String(shopOpeningInr).replace(/[,₹\s]/g, ''))
+    if (!(Number.isFinite(gm) && Math.abs(gm) >= 0.0005) && !(Number.isFinite(inr) && Math.abs(inr) >= 0.005)) {
+      alert('Enter opening metal (g) and/or opening ₹')
+      return
+    }
+    setBusy(true)
+    try {
+      await axios.put('/api/reseller/erp/ledger/daybook/opening', {
+        opening_date: dayBookDate,
+        opening_inr: Number.isFinite(inr) ? inr : 0,
+        opening_metal_gm: Number.isFinite(gm) ? Math.abs(gm) : 0,
+        opening_side: shopOpeningSide,
+        ledger_scope: laneMode ? 'lane' : 'official',
+      })
+      appAlert('Day book opening saved. Later days use this as the starting metal / ₹.', 'success')
+      await reload()
+    } catch (e) {
+      alert(erpErr(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const deleteShopOpening = async () => {
+    if (!(await appConfirm('Delete the shop day book opening? Jainav admin only. This cannot be undone.'))) return
+    setBusy(true)
+    try {
+      await axios.delete('/api/reseller/erp/ledger/daybook/opening', {
+        params: { lane_view: laneMode ? '1' : '0' },
+      })
+      appAlert('Shop opening deleted.', 'success')
+      await reload()
+    } catch (e) {
+      alert(erpErr(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const exportDaybookToTally = async () => {
     setBusy(true)
     try {
@@ -1363,6 +1471,10 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
         weight_kg: editDraft.weight_kg ?? null,
       })
       cancelEdit()
+      void axios
+        .get<{ purchase_vouchers: typeof purchaseVouchers }>('/api/reseller/erp/purchase-vouchers')
+        .then((r) => setPurchaseVouchers(r.data.purchase_vouchers || []))
+        .catch(() => {})
       await reload()
     } catch (e) {
       alert(erpErr(e))
@@ -1470,7 +1582,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
           'success',
         )
       }
-      setPvForm(emptyPvForm())
+      setPvForm(emptyPvForm(metalLedgerShop))
       setPvCustomerQ('')
       setPvCustomerLabel('')
       setPvCustomerResults([])
@@ -1579,6 +1691,8 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
               className={`${erpInputCls} min-w-[110px] py-1.5 text-xs`}
               value={String(d.entry_date || '')}
               onChange={(v) => setEditDraft({ ...editDraft, entry_date: v })}
+              disabled={dateLocked}
+              title={dateLockTitle}
             />
           </td>
           <td className="px-2 py-2">
@@ -2043,6 +2157,8 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                         className={`${erpInputCls} min-w-[110px] py-1.5 text-xs`}
                         value={inlineDraft.entry_date}
                         onChange={(v) => setInlineDraft({ ...inlineDraft, entry_date: v })}
+                        disabled={dateLocked}
+                        title={dateLockTitle}
                       />
                     </td>
                     <td className="px-2 py-2">
@@ -2153,7 +2269,14 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                 className={`${erpInputCls} mt-1`}
                 value={form.entry_date}
                 onChange={(v) => setForm({ ...form, entry_date: v })}
+                disabled={dateLocked}
+                title={dateLockTitle}
               />
+              {dateLocked ? (
+                <span className="mt-1 block text-[10px] text-[var(--color-jewelry-black,#1a1814)]/45">
+                  Today’s date — only an ERP admin can change it
+                </span>
+              ) : null}
             </label>
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
               Currency
@@ -2196,16 +2319,13 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                     onChange={(e) =>
                       setForm({
                         ...form,
-                        metal_kind: e.target.value as
-                          | 'received'
-                          | 'issued'
-                          | 'apply'
-                          | 'mc_adjust'
-                          | 'to_cash',
+                        metal_kind: e.target.value as typeof form.metal_kind,
                       })
                     }
                   >
                     <option value="received">Metal received from customer</option>
+                    <option value="opening_credit">Opening — shop holds customer metal</option>
+                    <option value="opening_debit">Opening — customer owes shop metal</option>
                     <option value="fixed_asset_receive">Metal received as fixed asset</option>
                     <option value="issued">Metal issued to customer</option>
                     <option value="apply">Apply existing metal to bill</option>
@@ -2374,8 +2494,24 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                 <option value="payment_in">Payment received</option>
                 <option value="payment_out">Payment made (to party / supplier)</option>
                 <option value="adjustment">Adjustment</option>
+                {metalLedgerShop ? <option value="opening">Opening balance</option> : null}
               </select>
             </label>
+            {metalLedgerShop && form.entry_type === 'opening' ? (
+              <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                Opening side
+                <select
+                  className={`${erpInputCls} mt-1`}
+                  value={form.opening_side}
+                  onChange={(e) =>
+                    setForm({ ...form, opening_side: e.target.value as 'credit' | 'debit' })
+                  }
+                >
+                  <option value="credit">Customer has credit (shop holds ₹)</option>
+                  <option value="debit">Customer owes shop ₹</option>
+                </select>
+              </label>
+            ) : null}
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
               Mode
               <select
@@ -2545,7 +2681,18 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
             </label>
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
               Date
-              <ErpDateInput className={`${erpInputCls} mt-1`} value={pvForm.entry_date} onChange={(v) => setPvForm({ ...pvForm, entry_date: v })} />
+              <ErpDateInput
+                className={`${erpInputCls} mt-1`}
+                value={pvForm.entry_date}
+                onChange={(v) => setPvForm({ ...pvForm, entry_date: v })}
+                disabled={dateLocked}
+                title={dateLockTitle}
+              />
+              {dateLocked ? (
+                <span className="mt-1 block text-[10px] text-[var(--color-jewelry-black,#1a1814)]/45">
+                  Today’s date — only an ERP admin can change it
+                </span>
+              ) : null}
             </label>
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
               Vendor / supplier
@@ -2788,7 +2935,18 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
               Date
-              <ErpDateInput className={`${erpInputCls} mt-1`} value={expenseForm.entry_date} onChange={(v) => setExpenseForm({ ...expenseForm, entry_date: v })} />
+              <ErpDateInput
+                className={`${erpInputCls} mt-1`}
+                value={expenseForm.entry_date}
+                onChange={(v) => setExpenseForm({ ...expenseForm, entry_date: v })}
+                disabled={dateLocked}
+                title={dateLockTitle}
+              />
+              {dateLocked ? (
+                <span className="mt-1 block text-[10px] text-[var(--color-jewelry-black,#1a1814)]/45">
+                  Today’s date — only an ERP admin can change it
+                </span>
+              ) : null}
             </label>
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
               Type
@@ -3171,6 +3329,72 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
               Unassigned only
             </label>
           </div>
+          {canEditLedgerDate && daybookMetalView ? (
+            <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/30 p-3">
+              <p className="text-xs font-semibold text-[#1a1814]">Shop opening (admin, once)</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-[var(--color-jewelry-black,#1a1814)]/60">
+                Set the morning stock for this date. Every later day uses the previous closing as opening. Delete only
+                in Jainav mode.
+              </p>
+              {dayBook?.summary.shop_opening ? (
+                <p className="mt-2 text-[11px] font-medium text-[#1a1814]">
+                  Current opening from {formatErpDateDdMmYyyy(dayBook.summary.shop_opening.opening_date)}:{' '}
+                  {formatErpInr(dayBook.summary.shop_opening.opening_inr)} ·{' '}
+                  {formatMetalGm(Math.abs(dayBook.summary.shop_opening.opening_metal_gm || 0)) || '0.000 g'}
+                  {dayBook.summary.shop_opening.opening_metal_gm < 0
+                    ? ' (shop holds)'
+                    : dayBook.summary.shop_opening.opening_metal_gm > 0
+                      ? ' (customers owe)'
+                      : ''}
+                </p>
+              ) : (
+                <p className="mt-2 text-[11px] text-[var(--color-jewelry-black,#1a1814)]/50">No shop opening saved yet.</p>
+              )}
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                  Opening ₹
+                  <input
+                    className={`${erpInputCls} mt-1 tabular-nums`}
+                    inputMode="decimal"
+                    value={shopOpeningInr}
+                    onChange={(e) => setShopOpeningInr(e.target.value.replace(/[^\d.-]/g, ''))}
+                    placeholder="0"
+                  />
+                </label>
+                <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                  Opening metal (g)
+                  <input
+                    className={`${erpInputCls} mt-1 tabular-nums`}
+                    inputMode="decimal"
+                    value={shopOpeningGm}
+                    onChange={(e) => setShopOpeningGm(e.target.value.replace(/[^\d.]/g, ''))}
+                    placeholder="e.g. 1000"
+                  />
+                </label>
+                <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                  Metal meaning
+                  <select
+                    className={`${erpInputCls} mt-1`}
+                    value={shopOpeningSide}
+                    onChange={(e) => setShopOpeningSide(e.target.value as 'hold' | 'owe')}
+                  >
+                    <option value="hold">Shop holds (you owe customers)</option>
+                    <option value="owe">Customers owe shop</option>
+                  </select>
+                </label>
+                <div className="flex flex-wrap items-end gap-2">
+                  <button type="button" className={erpBtnPrimary} disabled={busy} onClick={() => void saveShopOpening()}>
+                    Save opening
+                  </button>
+                  {canDeleteRecords && dayBook?.summary.shop_opening ? (
+                    <button type="button" className={erpBtnGhost} disabled={busy} onClick={() => void deleteShopOpening()}>
+                      Delete
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
           <div className={`grid gap-2 ${daybookMetalView ? 'sm:grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-3'}`}>
             {daybookMetalView ? (
               <>
@@ -3186,35 +3410,46 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                     {formatMetalGm(dayBook?.summary.opening_balance_metal_gm ?? 0) || '0.000 g'}
                   </p>
                 </div>
+                <div className="rounded-xl border border-[var(--color-slate-700,#e8e4df)] px-3 py-2">
+                  <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Metal in</p>
+                  <p className="font-bold tabular-nums text-[var(--color-jewelry-black,#1a1814)]">
+                    {formatMetalGm(dayBookLedger.creditMetal) || '0.000 g'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-[var(--color-slate-700,#e8e4df)] px-3 py-2">
+                  <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Metal out</p>
+                  <p className="font-bold tabular-nums text-[var(--color-jewelry-black,#1a1814)]">
+                    {formatMetalGm(dayBookLedger.debitMetal) || '0.000 g'}
+                  </p>
+                </div>
               </>
             ) : null}
             <div className="rounded-xl border border-[var(--color-slate-700,#e8e4df)] px-3 py-2">
-              <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Debit</p>
+              <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Debit ₹</p>
               <p className="font-bold tabular-nums text-[var(--color-jewelry-black,#1a1814)]">
-                {formatLedgerBalanceCell(dayBookLedger.debit, dayBookLedger.debitMetal, {
-                  laneLedger: daybookMetalView,
-                  splitMetalColumn: daybookMetalView,
-                })}
+                {formatErpInr(dayBookLedger.debit)}
               </p>
             </div>
             <div className="rounded-xl border border-[var(--color-slate-700,#e8e4df)] px-3 py-2">
-              <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Credit</p>
+              <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Credit ₹</p>
               <p className="font-bold tabular-nums text-[var(--color-jewelry-black,#1a1814)]">
-                {formatLedgerBalanceCell(dayBookLedger.credit, dayBookLedger.creditMetal, {
-                  laneLedger: daybookMetalView,
-                  splitMetalColumn: daybookMetalView,
-                })}
+                {formatErpInr(dayBookLedger.credit)}
               </p>
             </div>
             <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/40 px-3 py-2">
-              <p className="text-[10px] font-bold uppercase text-emerald-800/70">Closing balance</p>
+              <p className="text-[10px] font-bold uppercase text-emerald-800/70">Closing ₹</p>
               <p className="font-bold tabular-nums text-emerald-900">
-                {formatLedgerBalanceCell(dayBookLedger.balance, dayBookLedger.balanceMetal, {
-                  laneLedger: daybookMetalView,
-                  splitMetalColumn: daybookMetalView,
-                })}
+                {formatErpInr(dayBookLedger.balance)}
               </p>
             </div>
+            {daybookMetalView ? (
+              <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/40 px-3 py-2">
+                <p className="text-[10px] font-bold uppercase text-emerald-800/70">Closing metal</p>
+                <p className="font-bold tabular-nums text-emerald-900">
+                  {formatMetalGm(dayBookLedger.balanceMetal) || '0.000 g'}
+                </p>
+              </div>
+            ) : null}
           </div>
           <div className="overflow-x-auto rounded-xl border border-[var(--color-slate-700,#e8e4df)]">
             <table className="min-w-full text-left text-xs">

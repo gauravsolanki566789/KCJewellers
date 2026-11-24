@@ -56,3 +56,11 @@ export function summarizeBillsMetalTotals(bills: ErpBill[]): BillMetalTotals {
     silverValueInr: round2(silverValueInr),
   }
 }
+
+export function billWeightGm(bill: ErpBill): number {
+  let g = 0
+  for (const line of bill.lines || []) {
+    g += Number(line.originalWeightGm ?? line.weightGm) || 0
+  }
+  return round3(g)
+}

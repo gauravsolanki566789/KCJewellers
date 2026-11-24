@@ -2,13 +2,6 @@ ssh root@159.65.145.51
 cd /var/www/kcjewellers
 ./deploy.sh
 
-`deploy.sh` is unchanged (git pull → migrate → rebuild client → `pm2 restart all`). After migrations, `npm run migrate` automatically stops `kc-frontend` so step 3 can delete `client/.next`; step 5 starts it again — you do not need `pm2 stop kc-frontend` by hand.
-
-If you see **Permission denied** on `./deploy.sh`, run once: `chmod +x deploy.sh` (or `bash deploy.sh`). The repo tracks the script as executable; pull latest from `master` to pick that up.
-
-For a **migrate-only** run on the VPS (no deploy), set `KC_SKIP_FRONTEND_STOP=1` in `.env` so the storefront is not stopped.
-
-
 To add a domain as reseller:
 sudo nano /etc/nginx/sites-available/kcjewellers
 

@@ -181,6 +181,12 @@ function metalDebitCreditFromLedgerEntry(entryType, metalGm, narration) {
     if (type === 'purchase') {
         return { debit_metal_gm: 0, credit_metal_gm: gm };
     }
+    if (type === 'opening' || type === 'opening_balance') {
+        if (Number(metalGm) < 0 || /customer owes|due from customer/i.test(nar)) {
+            return { debit_metal_gm: gm, credit_metal_gm: 0 };
+        }
+        return { debit_metal_gm: 0, credit_metal_gm: gm };
+    }
     if (type === 'adjustment') {
         if (/metal credit converted to ₹ balance/i.test(nar)) {
             return { debit_metal_gm: gm, credit_metal_gm: 0 };

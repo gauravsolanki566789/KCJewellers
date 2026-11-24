@@ -117,6 +117,12 @@ function requireErpOperatorSession() {
     };
 }
 
+function isErpShopAdmin(req) {
+    const op = getSessionOperator(req);
+    if (!op) return true;
+    return op.role === 'admin';
+}
+
 function requireJainavUnlockedAdmin() {
     return (req, res, next) => {
         const op = getSessionOperator(req);
@@ -711,6 +717,7 @@ module.exports = {
     ensureOperatorsSchema,
     erpGateWithOperator,
     getSessionOperator,
+    isErpShopAdmin,
     operatorCanSaveSalesBill,
     mapOperator,
     operatorCanAccessModule,

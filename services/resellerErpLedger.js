@@ -11,6 +11,8 @@ const LEDGER_ENTRY_TYPES = new Set([
     'purchase',
     'expense',
     'salary',
+    'opening',
+    'opening_balance',
 ]);
 
 const PAYMENT_MODES = new Set(['cash', 'upi', 'neft', 'imps', 'cheque', 'card', 'other', 'bank', 'gpay', 'mixed', 'metal']);
@@ -32,9 +34,9 @@ const {
     gstSalesRegisterToCsv,
     laneBillsDetailToCsv,
 } = require('./resellerErpLedgerSalesReports');
-const { normDateIso } = require('./erpDateNormalize');
-const { deletePurchaseVoucherById } = require('./resellerErpPurchaseVouchers');
-const { requireJainavUnlockedAdmin } = require('./resellerErpOperators');
+const { normDateIso, istTodayIso } = require('./erpDateNormalize');
+const { deletePurchaseVoucherById, syncPurchaseVoucherWeightFromLedger } = require('./resellerErpPurchaseVouchers');
+const { requireJainavUnlockedAdmin, isErpShopAdmin } = require('./resellerErpOperators');
 const {
     parseMetalGm,
     metalGmFromLedgerRow,
@@ -43,7 +45,7 @@ const {
     isFixedAssetMetalRow,
     normalizeJewelleryMetal,
 } = require('./erpLedgerMetal');
-const { getCustomerBalancesBeforeLedgerEntry } = require('./resellerErpCustomerAccount');
+const { getCustomerBalancesBeforeLedgerEntry, loadShopDaybookOpening } = require('./resellerErpCustomerAccount');
 
 const { loadJewelleryLedgerMetalEnabled } = require('./erpJewelleryLedgerSettings');
 
@@ -96,6 +98,21 @@ function parseDateOrNull(v) {
     const dt = new Date(s);
     if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
     return null;
+}
+
+async function coerceLedgerEntryDate(req, requested, query, existingDate) {
+    const today = istTodayIso();
+    const parsed = parseDateOrNull(requested);
+    const kept = parseDateOrNull(existingDate);
+    if (isErpShopAdmin(req)) return parsed || kept || today;
+    let metalOn = false;
+    try {
+        metalOn = query ? await loadJewelleryLedgerMetalEnabled(query, req.user.id) : false;
+    } catch {
+        metalOn = false;
+    }
+    if (metalOn) return kept || today;
+    return parsed || kept || today;
 }
 
 function parseDrCrHint(v) {
@@ -235,6 +252,18 @@ async function ensureLedgerSchema(pool) {
             ADD COLUMN IF NOT EXISTS fixed_asset_metal BOOLEAN NOT NULL DEFAULT false;
         ALTER TABLE reseller_erp_ledger_entries
             ADD COLUMN IF NOT EXISTS jewellery_metal VARCHAR(16);
+        CREATE TABLE IF NOT EXISTS reseller_erp_daybook_openings (
+            id SERIAL PRIMARY KEY,
+            reseller_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            ledger_scope VARCHAR(16) NOT NULL DEFAULT 'official',
+            opening_date DATE NOT NULL,
+            opening_inr NUMERIC(14, 2) NOT NULL DEFAULT 0,
+            opening_metal_gm NUMERIC(16, 6) NOT NULL DEFAULT 0,
+            jewellery_metal VARCHAR(16),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (reseller_user_id, ledger_scope)
+        );
         CREATE INDEX IF NOT EXISTS idx_reseller_erp_ledger_entries_reseller_date
             ON reseller_erp_ledger_entries (reseller_user_id, entry_date DESC, id DESC);
         CREATE INDEX IF NOT EXISTS idx_reseller_erp_ledger_entries_customer
@@ -841,6 +870,13 @@ function registerResellerErpLedgerRoutes(app, deps) {
                 entryType = 'payment_in';
             } else if (metalKind === 'fixed_asset_issue') {
                 entryType = 'payment_out';
+            } else if (
+                metalKind === 'opening' ||
+                metalKind === 'opening_credit' ||
+                metalKind === 'opening_debit' ||
+                metalKind === 'opening_balance'
+            ) {
+                entryType = 'opening';
             }
             const fixedAssetMetal =
                 metalKind === 'fixed_asset_receive' ||
@@ -955,7 +991,24 @@ function registerResellerErpLedgerRoutes(app, deps) {
             }
             let referenceNo = trimStr(req.body.reference_no, 120);
             let narration = trimStr(req.body.narration, 2000);
-            const entryDate = parseDateOrNull(req.body.entry_date) || new Date().toISOString().slice(0, 10);
+            const entryDate = await coerceLedgerEntryDate(req, req.body.entry_date, query);
+            if (entryType === 'opening') {
+                if (!customerId) {
+                    return res.status(400).json({ error: 'Select a customer for opening balance' });
+                }
+                const openingDebit =
+                    metalKind === 'opening_debit' ||
+                    String(req.body.opening_side || req.body.openingSide || '').toLowerCase() === 'debit' ||
+                    String(req.body.opening_side || '').toLowerCase() === 'customer_owes';
+                if (openingDebit) {
+                    if (resolvedMetalGm != null && Math.abs(resolvedMetalGm) >= 0.0005) {
+                        resolvedMetalGm = -Math.abs(resolvedMetalGm);
+                    }
+                    if (amount > 0) amount = -Math.abs(amount);
+                } else if (resolvedMetalGm != null) {
+                    resolvedMetalGm = Math.abs(resolvedMetalGm);
+                }
+            }
             let metalClearedGm = null;
             let virtualMetalFlag = false;
             if (
@@ -984,6 +1037,8 @@ function registerResellerErpLedgerRoutes(app, deps) {
                 const metalPrefix =
                     metalKind === 'apply' || metalKind === 'redeem' || entryType === 'adjustment'
                         ? 'MB'
+                        : entryType === 'opening' || entryType === 'opening_balance'
+                          ? 'MO'
                         : entryType === 'payment_out'
                           ? 'MI'
                           : 'MT';
@@ -1019,6 +1074,11 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     narration = `${metalWord} received as fixed asset ${absGm} g${rateBit}`;
                 } else if (entryType === 'payment_out') {
                     narration = `${metalWord} issued ${absGm} g${rateBit}`;
+                } else if (entryType === 'opening' || entryType === 'opening_balance') {
+                    narration =
+                        resolvedMetalGm < 0
+                            ? `Opening balance — customer owes shop ${absGm} g${rateBit}`
+                            : `Opening balance — shop holds customer metal ${absGm} g${rateBit}`;
                 } else {
                     narration = `${metalWord} received ${absGm} g${rateBit}`;
                 }
@@ -1445,8 +1505,42 @@ function registerResellerErpLedgerRoutes(app, deps) {
         try {
             const id = parseInt(String(req.params.id), 10);
             if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+            const existing = await query(
+                `SELECT * FROM reseller_erp_ledger_entries WHERE id = $1 AND reseller_user_id = $2`,
+                [id, req.user.id],
+            );
+            if (!existing.length) return res.status(404).json({ error: 'Entry not found' });
+            const prev = existing[0];
             const amount = parseAmount(req.body.amount_inr);
-            const metalGm = parseMetalGm(req.body.metal_gm ?? req.body.metalWeight ?? req.body.weight_gm);
+            let metalGm = parseMetalGm(req.body.metal_gm ?? req.body.metalWeight ?? req.body.weight_gm);
+            if (metalGm == null && req.body.weight_gm != null) {
+                metalGm = parseMetalGm(req.body.weight_gm);
+            }
+            const nextAmount = amount != null ? amount : Number(prev.amount_inr) || 0;
+            let nextMetal = metalGm != null ? metalGm : parseMetalGm(prev.metal_gm);
+            if (nextMetal == null) nextMetal = metalGmFromLedgerRow(prev) || null;
+            const nextWeightKg =
+                nextMetal != null && Math.abs(nextMetal) >= 0.0005
+                    ? roundMetalGm(Math.abs(nextMetal) / 1000)
+                    : req.body.weight_kg != null
+                      ? parseFloat(String(req.body.weight_kg).replace(/[,₹\s]/g, ''))
+                      : prev.weight_kg;
+            const entryDate = await coerceLedgerEntryDate(
+                req,
+                req.body.entry_date,
+                query,
+                prev.entry_date,
+            );
+            let narration = trimStr(req.body.narration, 2000) || prev.narration || '';
+            if (
+                prev.pv_id &&
+                nextMetal != null &&
+                Math.abs(nextMetal) >= 0.0005 &&
+                Math.abs(roundMetalGm(nextMetal) - roundMetalGm(metalGmFromLedgerRow(prev))) >= 0.0005
+            ) {
+                const gmTxt = Math.abs(nextMetal).toFixed(3);
+                narration = String(narration || '').replace(/\d+(?:\.\d+)?\s*g\b/i, `${gmTxt} g`);
+            }
             const rows = await query(
                 `UPDATE reseller_erp_ledger_entries SET
                     entry_date = COALESCE($1::date, entry_date),
@@ -1461,13 +1555,13 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     narration = COALESCE($10, narration),
                     is_suspense = COALESCE($11, is_suspense),
                     employee_id = $12,
-                    weight_kg = COALESCE($13, weight_kg),
-                    metal_gm = COALESCE($14, metal_gm),
+                    weight_kg = $13,
+                    metal_gm = $14,
                     updated_at = NOW()
                  WHERE id = $15 AND reseller_user_id = $16
                  RETURNING *`,
                 [
-                    parseDateOrNull(req.body.entry_date),
+                    entryDate,
                     trimStr(req.body.entry_type, 32) || null,
                     amount,
                     req.body.customer_id != null ? parseInt(String(req.body.customer_id), 10) || null : null,
@@ -1476,18 +1570,25 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     trimStr(req.body.reference_no, 120) || null,
                     trimStr(req.body.bank_name, 120) || null,
                     trimStr(req.body.counterparty_name, 255) || null,
-                    trimStr(req.body.narration, 2000) || null,
+                    narration,
                     req.body.is_suspense != null ? !!req.body.is_suspense : null,
                     req.body.employee_id != null ? parseInt(String(req.body.employee_id), 10) || null : null,
-                    req.body.weight_kg != null
-                        ? parseFloat(String(req.body.weight_kg).replace(/[,₹\s]/g, ''))
-                        : null,
-                    metalGm,
+                    nextWeightKg,
+                    nextMetal,
                     id,
                     req.user.id,
                 ],
             );
             if (!rows.length) return res.status(404).json({ error: 'Entry not found' });
+            if (rows[0].pv_id && nextMetal != null && Math.abs(nextMetal) >= 0.0005) {
+                await syncPurchaseVoucherWeightFromLedger(
+                    query,
+                    req.user.id,
+                    rows[0].pv_id,
+                    nextMetal,
+                    nextAmount,
+                );
+            }
             res.json({ success: true, entry: mapLedgerEntry(rows[0]) });
         } catch (e) {
             console.error('erp ledger update:', e);
@@ -1783,6 +1884,104 @@ function registerResellerErpLedgerRoutes(app, deps) {
             if (status !== 500) return res.status(status).json({ error: e.message });
             console.error('erp ledger daybook:', e);
             res.status(500).json({ error: e.message || 'Failed to load day book' });
+        }
+    });
+
+    app.get('/api/reseller/erp/ledger/daybook/opening', checkAuth, erpGate, async (req, res) => {
+        try {
+            const scope = String(req.query.lane_view || '') === '1' ? 'lane' : 'official';
+            const row = await loadShopDaybookOpening(query, req.user.id, scope);
+            res.json({ shop_opening: row });
+        } catch (e) {
+            res.status(500).json({ error: e.message || 'Failed to load shop opening' });
+        }
+    });
+
+    app.put('/api/reseller/erp/ledger/daybook/opening', checkAuth, erpGate, requireJson, async (req, res) => {
+        try {
+            if (!isErpShopAdmin(req)) {
+                return res.status(403).json({ error: 'Only an ERP admin can set the day book opening.' });
+            }
+            const scope = String(req.body.ledger_scope || (req.body.lane_view ? 'lane' : 'official')).toLowerCase();
+            const ledgerScope = LEDGER_SCOPES.has(scope) ? scope : 'official';
+            const openingDate = parseDateOrNull(req.body.opening_date || req.body.entry_date);
+            if (!openingDate) return res.status(400).json({ error: 'Opening date required' });
+            const openingInr = parseAmount(req.body.opening_inr) ?? 0;
+            let openingMetal = parseMetalGm(req.body.opening_metal_gm ?? req.body.opening_metal) ?? 0;
+            const side = String(req.body.opening_side || req.body.metal_side || 'hold').toLowerCase();
+            if (side === 'hold' || side === 'shop_holds' || side === 'credit') {
+                openingMetal = -Math.abs(openingMetal);
+            } else if (side === 'owe' || side === 'customer_owes' || side === 'debit') {
+                openingMetal = Math.abs(openingMetal);
+            }
+            const existing = await query(
+                `SELECT id FROM reseller_erp_daybook_openings
+                 WHERE reseller_user_id = $1 AND ledger_scope = $2 LIMIT 1`,
+                [req.user.id, ledgerScope],
+            );
+            let row;
+            if (existing.length) {
+                row = (
+                    await query(
+                        `UPDATE reseller_erp_daybook_openings
+                         SET opening_date = $1, opening_inr = $2, opening_metal_gm = $3,
+                             jewellery_metal = $4, updated_at = NOW()
+                         WHERE id = $5 AND reseller_user_id = $6
+                         RETURNING *`,
+                        [
+                            openingDate,
+                            openingInr,
+                            openingMetal,
+                            normalizeJewelleryMetal(req.body.jewellery_metal) || null,
+                            existing[0].id,
+                            req.user.id,
+                        ],
+                    )
+                )[0];
+            } else {
+                row = (
+                    await query(
+                        `INSERT INTO reseller_erp_daybook_openings
+                            (reseller_user_id, ledger_scope, opening_date, opening_inr, opening_metal_gm, jewellery_metal)
+                         VALUES ($1,$2,$3,$4,$5,$6)
+                         RETURNING *`,
+                        [
+                            req.user.id,
+                            ledgerScope,
+                            openingDate,
+                            openingInr,
+                            openingMetal,
+                            normalizeJewelleryMetal(req.body.jewellery_metal) || null,
+                        ],
+                    )
+                )[0];
+            }
+            res.json({
+                success: true,
+                shop_opening: await loadShopDaybookOpening(query, req.user.id, ledgerScope),
+                id: row?.id,
+            });
+        } catch (e) {
+            console.error('erp daybook opening save:', e);
+            res.status(500).json({ error: e.message || 'Failed to save shop opening' });
+        }
+    });
+
+    app.delete('/api/reseller/erp/ledger/daybook/opening', checkAuth, erpGate, requireJainavUnlockedAdmin(), async (req, res) => {
+        try {
+            const scope = String(req.query.lane_view || req.body?.ledger_scope || 'official').toLowerCase();
+            const ledgerScope = LEDGER_SCOPES.has(scope) ? scope : 'official';
+            const rows = await query(
+                `DELETE FROM reseller_erp_daybook_openings
+                 WHERE reseller_user_id = $1 AND ledger_scope = $2
+                 RETURNING id`,
+                [req.user.id, ledgerScope],
+            );
+            if (!rows.length) return res.status(404).json({ error: 'No shop opening to delete' });
+            res.json({ success: true });
+        } catch (e) {
+            console.error('erp daybook opening delete:', e);
+            res.status(500).json({ error: e.message || 'Failed to delete shop opening' });
         }
     });
 

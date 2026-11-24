@@ -62,9 +62,20 @@ function tallyDateYmd(isoDate) {
     return iso.replace(/-/g, '');
 }
 
+/** Calendar today in IST (shop books). */
+function istTodayIso() {
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).format(new Date());
+}
+
 module.exports = {
     dateObjectToIso,
     parseDateOrNull,
     normDateIso,
     tallyDateYmd,
+    istTodayIso,
 };

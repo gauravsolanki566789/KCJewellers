@@ -40,6 +40,8 @@ type ErpOperatorContextValue = {
   canAccessModule: (moduleId: ResellerErpModuleId | string) => boolean
   /** Document / stock deletes: ERP admin after Jainav unlock (limited tab access still allowed). */
   canDeleteRecords: boolean
+  /** ERP admin operator (not staff) — back-date ledger / PV entries. */
+  canEditLedgerDate: boolean
   /** Save completed sales bill in Scan & Bill (staff permission). */
   canSaveBill: boolean
 }
@@ -131,6 +133,7 @@ export function ErpOperatorProvider({ children }: { children: ReactNode }) {
   )
 
   const canDeleteRecords = operator?.role === 'admin' && shadowUnlocked
+  const canEditLedgerDate = operator?.role === 'admin'
 
   const canSaveBill = useMemo(() => {
     if (!operator) return true
@@ -149,6 +152,7 @@ export function ErpOperatorProvider({ children }: { children: ReactNode }) {
       lockShadow,
       canAccessModule,
       canDeleteRecords,
+      canEditLedgerDate,
       canSaveBill,
     }),
     [
@@ -162,6 +166,7 @@ export function ErpOperatorProvider({ children }: { children: ReactNode }) {
       lockShadow,
       canAccessModule,
       canDeleteRecords,
+      canEditLedgerDate,
       canSaveBill,
     ],
   )

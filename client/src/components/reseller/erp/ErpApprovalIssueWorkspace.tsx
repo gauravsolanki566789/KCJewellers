@@ -21,12 +21,16 @@ import { openPdfBlobInViewer, openPdfViewerOptionsFromPayload } from '@/lib/pdf-
 import type { ErpBillSession } from '@/lib/erp-bill-session'
 import { resellerErpModulePath } from '@/lib/reseller-erp-modules'
 import { appAlert, appConfirm } from '@/lib/app-notice'
-import { erpDateFilterToIso, formatErpDateDdMmYyyy, isoToDdMmYyyyInput, erpDefaultHistoryFromIso } from '@/lib/erp-date-format'
+import { erpDateFilterToIso, formatErpDateDdMmYyyy, isoToDdMmYyyyInput, erpDefaultHistoryFromIso, erpTodayIso } from '@/lib/erp-date-format'
 import { sortErpBillsDesc } from '@/lib/erp-bill-sort'
 import { ClipboardList, FileText, Loader2, RotateCcw, ShoppingCart, Trash2 } from 'lucide-react'
+import { billWeightGm, summarizeBillsMetalTotals } from '@/lib/erp-bill-metal-totals'
+import { formatMetalGm } from '@/lib/erp-ledger-metal'
+import { useJewelleryLedgerMetalEnabled } from '@/hooks/useJewelleryLedgerMetalEnabled'
 
 export function ErpApprovalIssueWorkspace() {
   const { canDeleteRecords, canAccessModule, shadowUnlocked } = useErpOperator()
+  const { enabled: metalLedgerShop } = useJewelleryLedgerMetalEnabled()
   const auth = useAuth()
   const brandLabel = useMemo(() => {
     const name = auth.user && (auth.user as WholesaleUserFields).business_name
@@ -35,6 +39,7 @@ export function ErpApprovalIssueWorkspace() {
   const canEstimates = canAccessModule('estimations')
 
   const [bills, setBills] = useState<ErpBill[]>([])
+  const [openApprovals, setOpenApprovals] = useState<ErpBill[]>([])
   const [busy, setBusy] = useState(false)
   const [q, setQ] = useState('')
   const [from, setFrom] = useState(() => isoToDdMmYyyyInput(erpDefaultHistoryFromIso()))
@@ -69,15 +74,20 @@ export function ErpApprovalIssueWorkspace() {
       if (toIso) params.to = toIso
     }
     try {
-      const res = await axios.get<{ bills: ErpBill[] }>('/api/reseller/erp/bills', { params })
-      setBills(
-        sortErpBillsDesc(
-          (res.data.bills || []).filter((b) => String(b.bill_type || '').toLowerCase() === 'approval'),
-        ),
-      )
+      const [res, allRes] = await Promise.all([
+        axios.get<{ bills: ErpBill[] }>('/api/reseller/erp/bills', { params }),
+        axios.get<{ bills: ErpBill[] }>('/api/reseller/erp/bills', {
+          params: { bill_type: 'approval', from: '2000-01-01' },
+        }),
+      ])
+      const onlyApproval = (list: ErpBill[]) =>
+        sortErpBillsDesc((list || []).filter((b) => String(b.bill_type || '').toLowerCase() === 'approval'))
+      setBills(onlyApproval(res.data.bills || []))
+      setOpenApprovals(onlyApproval(allRes.data.bills || []))
     } catch (e) {
       console.error('erp approvals load:', e)
       setBills([])
+      setOpenApprovals([])
     }
   }, [q, from, to, onDate])
 
@@ -176,6 +186,31 @@ export function ErpApprovalIssueWorkspace() {
     }
   }
 
+  const metalTotals = useMemo(() => summarizeBillsMetalTotals(openApprovals), [openApprovals])
+  const totalApprovalGm = useMemo(
+    () => Math.round((metalTotals.goldWeightGm + metalTotals.silverWeightGm) * 1000) / 1000,
+    [metalTotals],
+  )
+  const approvalStock = useMemo(() => {
+    const start = erpDateFilterToIso(onDate) || erpDateFilterToIso(from)
+    const end = erpDateFilterToIso(onDate) || erpDateFilterToIso(to) || erpTodayIso()
+    const dateOf = (b: ErpBill) => String(b.bill_date || b.created_at || '').slice(0, 10)
+    const openingBills = start ? openApprovals.filter((b) => dateOf(b) && dateOf(b) < start) : []
+    const issuedBills = start
+      ? openApprovals.filter((b) => {
+          const d = dateOf(b)
+          return d >= start && d <= end
+        })
+      : openApprovals
+    const openingGm = summarizeBillsMetalTotals(openingBills)
+    const issuedGm = summarizeBillsMetalTotals(issuedBills)
+    return {
+      openingGm: Math.round((openingGm.goldWeightGm + openingGm.silverWeightGm) * 1000) / 1000,
+      issuedGm: Math.round((issuedGm.goldWeightGm + issuedGm.silverWeightGm) * 1000) / 1000,
+      closingGm: totalApprovalGm,
+    }
+  }, [openApprovals, from, to, onDate, totalApprovalGm])
+
   const rowActions = (b: ErpBill) => {
     const acting = actionId === b.id
     return (
@@ -238,8 +273,45 @@ export function ErpApprovalIssueWorkspace() {
       </div>
       <p className="text-xs leading-relaxed text-[var(--color-jewelry-black,#1a1814)]/55">
         Issue an estimate from the Estimates tab. Stock leaves inventory until you convert back to an estimate or
-        convert to a sales bill.
+        convert to a sales bill. Weights below are the exact grams currently out on approval in this filter.
       </p>
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <div className={`${erpCardCls} py-3`}>
+          <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Currently out</p>
+          <p className="text-lg font-bold tabular-nums text-[#1a1814]">{openApprovals.length}</p>
+        </div>
+        <div className={`${erpCardCls} py-3`}>
+          <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Opening weight</p>
+          <p className="text-lg font-bold tabular-nums text-[#1a1814]">
+            {formatMetalGm(approvalStock.openingGm) || '0.000 g'}
+          </p>
+        </div>
+        <div className={`${erpCardCls} py-3`}>
+          <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Issued in period</p>
+          <p className="text-lg font-bold tabular-nums text-[#1a1814]">
+            {formatMetalGm(approvalStock.issuedGm) || '0.000 g'}
+          </p>
+        </div>
+        <div className={`${erpCardCls} py-3`}>
+          <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Closing / currently out</p>
+          <p className="text-lg font-bold tabular-nums text-[#1a1814]">
+            {formatMetalGm(approvalStock.closingGm) || '0.000 g'}
+          </p>
+        </div>
+        <div className={`${erpCardCls} py-3`}>
+          <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Silver in approval</p>
+          <p className="text-lg font-bold tabular-nums text-[#1a1814]">
+            {formatMetalGm(metalTotals.silverWeightGm) || '0.000 g'}
+          </p>
+        </div>
+        <div className={`${erpCardCls} py-3`}>
+          <p className="text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">Gold in approval</p>
+          <p className="text-lg font-bold tabular-nums text-[#1a1814]">
+            {formatMetalGm(metalTotals.goldWeightGm) || '0.000 g'}
+          </p>
+        </div>
+      </div>
 
       <div className={`${erpCardCls} grid gap-3 sm:grid-cols-2 lg:grid-cols-4`}>
         <input
@@ -308,6 +380,9 @@ export function ErpApprovalIssueWorkspace() {
                 </p>
                 <p className="mt-1 text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
                   {b.lines?.length ?? 0} item{(b.lines?.length ?? 0) === 1 ? '' : 's'}
+                  {metalLedgerShop || billWeightGm(b) > 0
+                    ? ` · ${formatMetalGm(billWeightGm(b)) || '0.000 g'}`
+                    : ''}
                 </p>
                 <div className="mt-3">{rowActions(b)}</div>
               </div>
@@ -325,13 +400,14 @@ export function ErpApprovalIssueWorkspace() {
               <th className="px-3 py-2.5 font-semibold">Customer</th>
               <th className="px-3 py-2.5 font-semibold">Narration</th>
               <th className="px-3 py-2.5 font-semibold">Items</th>
+              <th className="px-3 py-2.5 font-semibold">Weight</th>
               <th className="px-3 py-2.5 font-semibold">Actions</th>
             </tr>
           </thead>
           <tbody>
             {bills.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-12 text-center text-[var(--color-jewelry-black,#1a1814)]/45">
+                <td colSpan={7} className="px-4 py-12 text-center text-[var(--color-jewelry-black,#1a1814)]/45">
                   No approval issues in this period.
                 </td>
               </tr>
@@ -348,6 +424,9 @@ export function ErpApprovalIssueWorkspace() {
                     <td className="max-w-[140px] truncate px-3 py-2.5">{b.customer_name || '—'}</td>
                     <td className="max-w-[180px] truncate px-3 py-2.5">{narration || '—'}</td>
                     <td className="px-3 py-2.5 tabular-nums">{b.lines?.length ?? 0}</td>
+                    <td className="px-3 py-2.5 tabular-nums text-[#1a1814]">
+                      {formatMetalGm(billWeightGm(b)) || '0.000 g'}
+                    </td>
                     <td className="px-3 py-2.5">{rowActions(b)}</td>
                   </tr>
                 )
