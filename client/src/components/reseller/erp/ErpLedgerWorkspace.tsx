@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react'
 import { ErpDateInput } from '@/components/reseller/erp/ErpDateInput'
+import { ErpBillingSuggestField } from '@/components/reseller/erp/ErpBillingSuggestField'
 import {
   erpBtnGhost,
   erpBtnPrimary,
@@ -461,10 +462,41 @@ function emptyPvForm() {
     weight_gm: '',
     metal_type: 'SILVER',
     pv_category: '',
+    style_code: '',
+    sku: '',
     payment_mode: 'neft',
     narration: '',
     customer_id: '',
   }
+}
+
+type DesignMasterStyle = {
+  style_code: string
+  style_name?: string | null
+  metal_type?: string | null
+  skus: { sku: string; product_name?: string | null; metal_type?: string | null }[]
+}
+
+function normDesignKey(v: string): string {
+  return String(v || '')
+    .trim()
+    .toUpperCase()
+}
+
+function metalMatchesPv(raw: string | null | undefined, pvMetal: string): boolean {
+  const m = String(raw || '').toLowerCase()
+  const want = String(pvMetal || '').toLowerCase()
+  if (!m) return true
+  if (want.startsWith('gold')) return m.includes('gold')
+  if (want.startsWith('silver')) return m.includes('silver')
+  return true
+}
+
+function stylesForPvMetal(tree: DesignMasterStyle[], pvMetal: string): DesignMasterStyle[] {
+  return tree.filter((s) => {
+    if (metalMatchesPv(s.metal_type, pvMetal)) return true
+    return (s.skus || []).some((sk) => metalMatchesPv(sk.metal_type, pvMetal))
+  })
 }
 
 function emptyExpenseForm() {
@@ -523,8 +555,11 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
       customer_mobile?: string | null
       customer_gstin?: string | null
       customer_address?: string | null
+      style_code?: string | null
+      sku?: string | null
     }[]
   >([])
+  const [designTree, setDesignTree] = useState<DesignMasterStyle[]>([])
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editDraft, setEditDraft] = useState<Partial<ErpLedgerEntry>>({})
   const [addingInline, setAddingInline] = useState(false)
@@ -547,6 +582,19 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
   const [pvCustomerResults, setPvCustomerResults] = useState<ErpCustomer[]>([])
   const [pvCustomerPickIdx, setPvCustomerPickIdx] = useState(-1)
   const [pvCustomerLabel, setPvCustomerLabel] = useState('')
+  const pvItemCategory =
+    metalLedgerShop &&
+    String(pvForm.pv_category || '').toLowerCase() === 'item' &&
+    pvForm.metal_type !== 'GENERAL' &&
+    pvForm.metal_type !== 'OTHER'
+  const pvStyleOptions = useMemo(() => {
+    const styles = stylesForPvMetal(designTree, pvForm.metal_type)
+    return styles.map((s) => s.style_code).filter(Boolean)
+  }, [designTree, pvForm.metal_type])
+  const pvSkuOptions = useMemo(() => {
+    const style = designTree.find((s) => normDesignKey(s.style_code) === normDesignKey(pvForm.style_code))
+    return (style?.skus || []).map((sk) => sk.sku).filter(Boolean)
+  }, [designTree, pvForm.style_code])
 
   useEffect(() => {
     const d = loadLedgerDraft(laneMode)
@@ -755,6 +803,10 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
       .get<{ purchase_vouchers: typeof purchaseVouchers }>('/api/reseller/erp/purchase-vouchers')
       .then((r) => setPurchaseVouchers(r.data.purchase_vouchers || []))
       .catch(() => setPurchaseVouchers([]))
+    void axios
+      .get<{ tree: DesignMasterStyle[] }>('/api/reseller/erp/design-master/tree')
+      .then((r) => setDesignTree(r.data.tree || []))
+      .catch(() => setDesignTree([]))
   }, [loadCustomers])
 
   useEffect(() => {
@@ -1386,6 +1438,17 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
       alert('Select a category (Metal, Item, Repair, Return, Sample, or Non metal)')
       return
     }
+    if (
+      metalLedgerShop &&
+      String(pvForm.pv_category).toLowerCase() === 'item' &&
+      pvForm.metal_type !== 'GENERAL' &&
+      pvForm.metal_type !== 'OTHER'
+    ) {
+      if (!pvForm.style_code.trim() || !pvForm.sku.trim()) {
+        alert('Choose a style and SKU from design master for Item purchases')
+        return
+      }
+    }
     setBusy(true)
     try {
       const res = await axios.post<{
@@ -1719,6 +1782,124 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
 
   const dayBookRows = dayBook?.transactions ?? []
 
+  const renderPayCustomerField = () => (
+            <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55 sm:col-span-2">
+              Customer
+              <div className="relative mt-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--color-jewelry-black,#1a1814)]/40" />
+                <input
+                  className={`${erpInputCls} pl-9`}
+                  placeholder="Search by name or mobile…"
+                  value={payCustomerQ}
+                  disabled={form.is_suspense}
+                  onChange={(e) => {
+                    const next = e.target.value
+                    setPayCustomerQ(next)
+                    setPayCustomerPickIdx(-1)
+                    if (!next.trim()) {
+                      setForm({ ...form, customer_id: '' })
+                      setPayCustomerLabel('')
+                    } else if (form.customer_id && next.trim() !== payCustomerLabel.split(' · ')[0]?.trim()) {
+                      setForm({ ...form, customer_id: '' })
+                      setPayCustomerLabel('')
+                    }
+                  }}
+                  onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                    const list = payCustomerResults.slice(0, 8)
+                    if (e.key === 'ArrowDown' && list.length) {
+                      e.preventDefault()
+                      setPayCustomerPickIdx((i) => Math.min(i + 1, list.length - 1))
+                    } else if (e.key === 'ArrowUp' && list.length) {
+                      e.preventDefault()
+                      setPayCustomerPickIdx((i) => Math.max(i - 1, 0))
+                    } else if (e.key === 'Enter' && list.length) {
+                      e.preventDefault()
+                      const idx =
+                        payCustomerPickIdx >= 0 && payCustomerPickIdx < list.length ? payCustomerPickIdx : 0
+                      const c = list[idx]
+                      setForm({ ...form, customer_id: String(c.id), is_suspense: false })
+                      setPayCustomerQ(c.name)
+                      setPayCustomerLabel(c.mobile ? `${c.name} · ${c.mobile}` : c.name)
+                      setPayCustomerResults([])
+                    }
+                  }}
+                />
+                {payCustomerResults.length > 0 && payCustomerQ.trim() ? (
+                  <ul className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-xl border border-[var(--color-slate-700,#e8e4df)] bg-white shadow-lg">
+                    {payCustomerResults.slice(0, 8).map((c, i) => (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          className={`block w-full px-3 py-2.5 text-left text-sm text-[var(--color-jewelry-black,#1a1814)] ${
+                            i === payCustomerPickIdx ? 'bg-[var(--kc-accent,#c41e3a)]/10' : 'hover:bg-[var(--color-slate-900,#f7f4ef)]'
+                          }`}
+                          onClick={() => {
+                            setForm({ ...form, customer_id: String(c.id), is_suspense: false })
+                            setPayCustomerQ(c.name)
+                            setPayCustomerLabel(c.mobile ? `${c.name} · ${c.mobile}` : c.name)
+                            setPayCustomerResults([])
+                          }}
+                        >
+                          <span className="font-medium">{c.name}</span>
+                          {c.mobile ? <span className="ml-2 text-xs text-[var(--color-jewelry-black,#1a1814)]/50">{c.mobile}</span> : null}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+              {payCustomerLabel ? (
+                <p className="mt-1 text-[11px] text-[var(--color-jewelry-black,#1a1814)]/55">{payCustomerLabel}</p>
+              ) : null}
+              {!metalLedgerShop && payBalances ? (
+                <div className="mt-2 rounded-xl border border-emerald-200/80 bg-emerald-50/50 px-3 py-2 text-[11px] leading-relaxed text-[#1a1814]">
+                  <p>
+                    Due {formatErpInr(payBalances.balance_due_inr)}
+                    {formatMetalGm(payBalances.metal_balance_gm)
+                      ? ` · ${formatMetalGm(payBalances.metal_balance_gm)}`
+                      : ''}
+                    {payBalances.has_gold_metal
+                      ? ` · Gold ${formatMetalGm(payBalances.gold_metal_balance_gm) || '0.000 g'}`
+                      : ''}
+                  </p>
+                  <p className="text-[#1a1814]/60">{metalBalanceHint(payBalances.metal_balance_gm)}</p>
+                  {form.currency === 'metal' ? (
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                      {Math.abs(payBalances.metal_balance_gm) >= 0.0005 ? (
+                        <button
+                          type="button"
+                          className="font-semibold text-emerald-800 underline"
+                          onClick={() =>
+                            setForm({
+                              ...form,
+                              metal_gm: Math.abs(payBalances.metal_balance_gm).toFixed(3),
+                            })
+                          }
+                        >
+                          Use {Math.abs(payBalances.metal_balance_gm).toFixed(3)} g
+                        </button>
+                      ) : null}
+                      {payBalances.balance_due_inr > 0 && form.metal_kind === 'mc_adjust' ? (
+                        <button
+                          type="button"
+                          className="font-semibold text-emerald-800 underline"
+                          onClick={() =>
+                            setForm({
+                              ...form,
+                              amount_inr: String(Math.round(payBalances.balance_due_inr)),
+                            })
+                          }
+                        >
+                          Use MC due {formatErpInr(payBalances.balance_due_inr)}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </label>
+  )
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -1965,6 +2146,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
             Record payment or metal
           </p>
           <div className="grid gap-3 sm:grid-cols-2">
+            {metalLedgerShop ? renderPayCustomerField() : null}
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
               Date
               <ErpDateInput
@@ -2210,121 +2392,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
             </label>
               </>
             ) : null}
-            <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55 sm:col-span-2">
-              Customer
-              <div className="relative mt-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--color-jewelry-black,#1a1814)]/40" />
-                <input
-                  className={`${erpInputCls} pl-9`}
-                  placeholder="Search by name or mobile…"
-                  value={payCustomerQ}
-                  disabled={form.is_suspense}
-                  onChange={(e) => {
-                    const next = e.target.value
-                    setPayCustomerQ(next)
-                    setPayCustomerPickIdx(-1)
-                    if (!next.trim()) {
-                      setForm({ ...form, customer_id: '' })
-                      setPayCustomerLabel('')
-                    } else if (form.customer_id && next.trim() !== payCustomerLabel.split(' · ')[0]?.trim()) {
-                      setForm({ ...form, customer_id: '' })
-                      setPayCustomerLabel('')
-                    }
-                  }}
-                  onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
-                    const list = payCustomerResults.slice(0, 8)
-                    if (e.key === 'ArrowDown' && list.length) {
-                      e.preventDefault()
-                      setPayCustomerPickIdx((i) => Math.min(i + 1, list.length - 1))
-                    } else if (e.key === 'ArrowUp' && list.length) {
-                      e.preventDefault()
-                      setPayCustomerPickIdx((i) => Math.max(i - 1, 0))
-                    } else if (e.key === 'Enter' && list.length) {
-                      e.preventDefault()
-                      const idx =
-                        payCustomerPickIdx >= 0 && payCustomerPickIdx < list.length ? payCustomerPickIdx : 0
-                      const c = list[idx]
-                      setForm({ ...form, customer_id: String(c.id), is_suspense: false })
-                      setPayCustomerQ(c.name)
-                      setPayCustomerLabel(c.mobile ? `${c.name} · ${c.mobile}` : c.name)
-                      setPayCustomerResults([])
-                    }
-                  }}
-                />
-                {payCustomerResults.length > 0 && payCustomerQ.trim() ? (
-                  <ul className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-xl border border-[var(--color-slate-700,#e8e4df)] bg-white shadow-lg">
-                    {payCustomerResults.slice(0, 8).map((c, i) => (
-                      <li key={c.id}>
-                        <button
-                          type="button"
-                          className={`block w-full px-3 py-2.5 text-left text-sm ${
-                            i === payCustomerPickIdx ? 'bg-[var(--kc-accent,#c41e3a)]/10' : 'hover:bg-[var(--color-slate-900,#f7f4ef)]'
-                          }`}
-                          onClick={() => {
-                            setForm({ ...form, customer_id: String(c.id), is_suspense: false })
-                            setPayCustomerQ(c.name)
-                            setPayCustomerLabel(c.mobile ? `${c.name} · ${c.mobile}` : c.name)
-                            setPayCustomerResults([])
-                          }}
-                        >
-                          <span className="font-medium">{c.name}</span>
-                          {c.mobile ? <span className="ml-2 text-xs text-[var(--color-jewelry-black,#1a1814)]/50">{c.mobile}</span> : null}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-              {payCustomerLabel ? (
-                <p className="mt-1 text-[11px] text-[var(--color-jewelry-black,#1a1814)]/55">{payCustomerLabel}</p>
-              ) : null}
-              {payBalances ? (
-                <div className="mt-2 rounded-xl border border-emerald-200/80 bg-emerald-50/50 px-3 py-2 text-[11px] leading-relaxed text-[#1a1814]">
-                  <p>
-                    Due {formatErpInr(payBalances.balance_due_inr)}
-                    {formatMetalGm(payBalances.metal_balance_gm)
-                      ? ` · ${formatMetalGm(payBalances.metal_balance_gm)}`
-                      : ''}
-                    {payBalances.has_gold_metal
-                      ? ` · Gold ${formatMetalGm(payBalances.gold_metal_balance_gm) || '0.000 g'}`
-                      : ''}
-                  </p>
-                  <p className="text-[#1a1814]/60">{metalBalanceHint(payBalances.metal_balance_gm)}</p>
-                  {form.currency === 'metal' ? (
-                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                      {Math.abs(payBalances.metal_balance_gm) >= 0.0005 ? (
-                        <button
-                          type="button"
-                          className="font-semibold text-emerald-800 underline"
-                          onClick={() =>
-                            setForm({
-                              ...form,
-                              metal_gm: Math.abs(payBalances.metal_balance_gm).toFixed(3),
-                            })
-                          }
-                        >
-                          Use {Math.abs(payBalances.metal_balance_gm).toFixed(3)} g
-                        </button>
-                      ) : null}
-                      {payBalances.balance_due_inr > 0 && form.metal_kind === 'mc_adjust' ? (
-                        <button
-                          type="button"
-                          className="font-semibold text-emerald-800 underline"
-                          onClick={() =>
-                            setForm({
-                              ...form,
-                              amount_inr: String(Math.round(payBalances.balance_due_inr)),
-                            })
-                          }
-                        >
-                          Use MC due {formatErpInr(payBalances.balance_due_inr)}
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </label>
+            {!metalLedgerShop ? renderPayCustomerField() : null}
             <input
               className={erpInputCls}
               placeholder="UTR / Cheque no"
@@ -2548,7 +2616,22 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
             ) : null}
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
               Metal
-              <select className={`${erpInputCls} mt-1`} value={pvForm.metal_type} onChange={(e) => setPvForm({ ...pvForm, metal_type: e.target.value })}>
+              <select
+                className={`${erpInputCls} mt-1`}
+                value={pvForm.metal_type}
+                onChange={(e) => {
+                  const metal_type = e.target.value
+                  const still = stylesForPvMetal(designTree, metal_type).some(
+                    (s) => normDesignKey(s.style_code) === normDesignKey(pvForm.style_code),
+                  )
+                  setPvForm({
+                    ...pvForm,
+                    metal_type,
+                    style_code: still ? pvForm.style_code : '',
+                    sku: still ? pvForm.sku : '',
+                  })
+                }}
+              >
                 <option value="SILVER">Silver</option>
                 <option value="GOLD">Gold</option>
                 <option value="GENERAL">General purchase</option>
@@ -2560,7 +2643,15 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                 <select
                   className={`${erpInputCls} mt-1`}
                   value={pvForm.pv_category}
-                  onChange={(e) => setPvForm({ ...pvForm, pv_category: e.target.value })}
+                  onChange={(e) => {
+                    const pv_category = e.target.value
+                    setPvForm({
+                      ...pvForm,
+                      pv_category,
+                      style_code: pv_category === 'item' ? pvForm.style_code : '',
+                      sku: pv_category === 'item' ? pvForm.sku : '',
+                    })
+                  }}
                 >
                   <option value="">Select category…</option>
                   {PV_CATEGORY_OPTIONS.map((o) => (
@@ -2570,6 +2661,56 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                   ))}
                 </select>
               </label>
+            ) : null}
+            {pvItemCategory ? (
+              <>
+                <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                  Style code
+                  <div className="mt-1">
+                    <ErpBillingSuggestField
+                      value={pvForm.style_code}
+                      placeholder="Type or pick style…"
+                      options={pvStyleOptions}
+                      emptyText="No styles in design master for this metal"
+                      inputClassName={erpInputCls}
+                      onChange={(v) =>
+                        setPvForm({
+                          ...pvForm,
+                          style_code: v,
+                          sku: normDesignKey(v) === normDesignKey(pvForm.style_code) ? pvForm.sku : '',
+                        })
+                      }
+                      onCommit={(v) => {
+                        const code = normDesignKey(v)
+                        const match = pvStyleOptions.find((s) => normDesignKey(s) === code) || v.trim()
+                        setPvForm({
+                          ...pvForm,
+                          style_code: match,
+                          sku: normDesignKey(match) === normDesignKey(pvForm.style_code) ? pvForm.sku : '',
+                        })
+                      }}
+                    />
+                  </div>
+                </label>
+                <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                  SKU
+                  <div className="mt-1">
+                    <ErpBillingSuggestField
+                      value={pvForm.sku}
+                      placeholder={pvForm.style_code ? 'Type or pick SKU…' : 'Choose a style first'}
+                      options={pvSkuOptions}
+                      emptyText={pvForm.style_code ? 'No SKUs under this style' : 'Choose a style first'}
+                      inputClassName={erpInputCls}
+                      onChange={(v) => setPvForm({ ...pvForm, sku: v })}
+                      onCommit={(v) => {
+                        const code = normDesignKey(v)
+                        const match = pvSkuOptions.find((s) => normDesignKey(s) === code) || v.trim()
+                        setPvForm({ ...pvForm, sku: match })
+                      }}
+                    />
+                  </div>
+                </label>
+              </>
             ) : null}
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
               Payment mode
@@ -2606,7 +2747,9 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                       <p className="font-semibold text-[var(--color-jewelry-black,#1a1814)]">{pv.pv_number}</p>
                       <p className="text-[11px] text-[var(--color-jewelry-black,#1a1814)]/55">
                         {pv.vendor_name || 'Vendor'}
-                        {pv.pv_category ? ` · ${formatPvCategoryLabel(pv.pv_category)}` : ''} ·{' '}
+                        {pv.pv_category ? ` · ${formatPvCategoryLabel(pv.pv_category)}` : ''}
+                        {pv.style_code ? ` · ${pv.style_code}` : ''}
+                        {pv.sku ? ` / ${pv.sku}` : ''} ·{' '}
                         {formatPvWeightGrams(pv.weight_kg)} · pending {formatPvWeightGrams(pv.pending_weight_kg)} ·{' '}
                         {pv.status} · {formatErpDateDdMmYyyy(pv.entry_date)}
                       </p>

@@ -19,6 +19,7 @@ const pool = new Pool({
 });
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
+const { stopFrontendForDeployIfNeeded } = require('./stop-frontend-for-deploy');
 
 async function runMigrations() {
     console.log('');
@@ -55,8 +56,7 @@ async function runMigrations() {
 
         if (migrationFiles.length === 0) {
             console.log('ℹ️  No migration files found.');
-            return;
-        }
+        } else {
 
         console.log(`📋 Found ${migrationFiles.length} migration file(s)`);
         console.log('');
@@ -100,6 +100,9 @@ async function runMigrations() {
         console.log(`   Executed: ${migratedCount}`);
         console.log(`   Skipped:  ${skippedCount}`);
         console.log('');
+        }
+
+        stopFrontendForDeployIfNeeded();
 
     } catch (error) {
         console.error('');

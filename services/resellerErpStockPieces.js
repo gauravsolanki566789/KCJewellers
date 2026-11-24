@@ -18,6 +18,69 @@ const {
     syncPvReceivedWeightFromStock,
 } = require('./resellerErpPurchaseVouchers');
 const { requireJainavUnlockedAdmin } = require('./resellerErpOperators');
+
+function fillPieceFromPvDesign(piece, pv) {
+    if (!piece || !pv) return piece;
+    const style = String(pv.style_code || '').trim();
+    const sku = String(pv.sku || '').trim();
+    const metal = String(pv.metal_type || '').trim();
+    if (!String(piece.style_code || '').trim() && style) piece.style_code = style;
+    if (!String(piece.sku || '').trim() && sku) piece.sku = sku;
+    if (!String(piece.metal_type || '').trim() && metal) piece.metal_type = metal;
+    return piece;
+}
+
+async function applyDesignMasterToPiece(query, resellerUserId, piece) {
+    if (!piece || !piece.style_code || !piece.sku) return piece;
+    try {
+        await upsertDesignSkuCostsFromExcel(query, resellerUserId, piece);
+    } catch {
+        /* cost columns are optional */
+    }
+    try {
+        const defaults = await lookupDesignDefaults(
+            query,
+            resellerUserId,
+            piece.style_code,
+            piece.sku,
+        );
+        applyDesignDefaultsToPiece(piece, defaults);
+    } catch {
+        /* design master lookup is best-effort */
+    }
+    return piece;
+}
+
+async function loadPvDesignForBatch(query, resellerUserId, batchId) {
+    if (!batchId) return { pvId: null, pv: null };
+    const batchRows = await query(
+        `SELECT purchase_voucher_id FROM reseller_erp_stock_batches
+         WHERE id = $1::uuid AND reseller_user_id = $2 LIMIT 1`,
+        [batchId, resellerUserId],
+    );
+    const pvId = batchRows[0]?.purchase_voucher_id || null;
+    if (!pvId) return { pvId: null, pv: null };
+    try {
+        const pvRows = await query(
+            `SELECT style_code, sku, metal_type FROM reseller_erp_purchase_vouchers
+             WHERE id = $1 AND reseller_user_id = $2 LIMIT 1`,
+            [pvId, resellerUserId],
+        );
+        return { pvId, pv: pvRows[0] || null };
+    } catch (e) {
+        const msg = String(e.message || '');
+        if (msg.includes('style_code') || msg.includes('sku')) {
+            const pvRows = await query(
+                `SELECT metal_type FROM reseller_erp_purchase_vouchers
+                 WHERE id = $1 AND reseller_user_id = $2 LIMIT 1`,
+                [pvId, resellerUserId],
+            );
+            return { pvId, pv: pvRows[0] || null };
+        }
+        throw e;
+    }
+}
+
 const {
     loadRunningTagBarcodeSet,
     findAnySaleForBarcode,
@@ -1764,6 +1827,13 @@ function registerStockPieceRoutes(app, deps) {
             if (!rawRows.length) return res.status(400).json({ error: 'rows array required' });
             if (rawRows.length > 2000) return res.status(400).json({ error: 'Max 2000 rows per upload' });
 
+            const appendBatchId = String(req.body.batch_id || '').trim() || null;
+            let pvDesign = null;
+            if (appendBatchId) {
+                const linked = await loadPvDesignForBatch(query, req.user.id, appendBatchId);
+                pvDesign = linked.pv;
+            }
+
             const pieces = [];
             const usedBarcodes = new Set();
             const duplicateInFile = [];
@@ -1777,6 +1847,8 @@ function registerStockPieceRoutes(app, deps) {
             for (const row of rawRows) {
                 let p = applyNetWeightToPiece(parseExcelRowToPiece(row));
                 if (!p) continue;
+                fillPieceFromPvDesign(p, pvDesign);
+                await applyDesignMasterToPiece(query, req.user.id, p);
                 if (p.barcode) {
                     const bc = String(p.barcode).trim();
                     const isRt = runningTagSet.has(bc.toLowerCase());
@@ -1786,24 +1858,6 @@ function registerStockPieceRoutes(app, deps) {
                         continue;
                     }
                     usedBarcodes.add(dedupeKey);
-                }
-                if (p.style_code && p.sku) {
-                    try {
-                        await upsertDesignSkuCostsFromExcel(query, req.user.id, p);
-                    } catch {
-                        /* cost columns are optional */
-                    }
-                    try {
-                        const defaults = await lookupDesignDefaults(
-                            query,
-                            req.user.id,
-                            p.style_code,
-                            p.sku,
-                        );
-                        applyDesignDefaultsToPiece(p, defaults);
-                    } catch {
-                        /* design master lookup is best-effort */
-                    }
                 }
                 delete p.mrp_cost;
                 delete p.metal_cost_pct;
@@ -1831,7 +1885,6 @@ function registerStockPieceRoutes(app, deps) {
             }
             if (!pieces.length) return res.status(400).json({ error: 'No valid rows found' });
 
-            const appendBatchId = String(req.body.batch_id || '').trim() || null;
             const sourceFilename = String(
                 req.body.source_filename || req.body.sourceFilename || 'Excel import',
             )
@@ -2370,6 +2423,7 @@ function registerStockPieceRoutes(app, deps) {
                 [batchId, req.user.id],
             );
             if (!batchRows.length) return res.status(404).json({ error: 'Batch not found' });
+            const { pv: pvDesign } = await loadPvDesignForBatch(query, req.user.id, batchId);
 
             const barcodeSettings = await loadStockBarcodeSettings(query, req.user.id);
             const itemCodes = new Set();
@@ -2425,19 +2479,8 @@ function registerStockPieceRoutes(app, deps) {
                     earring_wt_only: r.earring_wt_only != null ? Number(r.earring_wt_only) : null,
                 };
 
-                if (pieceRow.style_code && pieceRow.sku) {
-                    try {
-                        const defaults = await lookupDesignDefaults(
-                            query,
-                            req.user.id,
-                            pieceRow.style_code,
-                            pieceRow.sku,
-                        );
-                        applyDesignDefaultsToPiece(pieceRow, defaults);
-                    } catch {
-                        /* best-effort */
-                    }
-                }
+                fillPieceFromPvDesign(pieceRow, pvDesign);
+                await applyDesignMasterToPiece(query, req.user.id, pieceRow);
 
                 if (isInsert) {
                     if (!pieceRow.barcode) {

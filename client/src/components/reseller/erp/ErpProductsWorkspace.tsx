@@ -32,6 +32,8 @@ type ActivePv = {
   status: string
   pv_category?: string | null
   metal_type?: string | null
+  style_code?: string | null
+  sku?: string | null
 }
 
 function PvWeightTally({ pv }: { pv: ActivePv }) {
@@ -623,6 +625,8 @@ export function ErpProductsWorkspace() {
                     {activePv.pv_number}
                     {activePv.pv_category ? ` · ${formatPvCategoryLabel(activePv.pv_category)}` : ''}
                     {activePv.metal_type ? ` · ${String(activePv.metal_type).toLowerCase() === 'gold' ? 'Gold' : 'Silver'}` : ''}
+                    {activePv.style_code ? ` · ${activePv.style_code}` : ''}
+                    {activePv.sku ? ` / ${activePv.sku}` : ''}
                     {' · '}
                     {activePv.status}
                   </p>

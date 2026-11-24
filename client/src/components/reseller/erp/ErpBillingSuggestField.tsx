@@ -25,6 +25,8 @@ type Props = {
   onChange: (value: string) => void
   onCommit: (value: string) => void
   inputRef?: (el: HTMLInputElement | null) => void
+  /** Override the default compact billing-grid input styles. */
+  inputClassName?: string
 }
 
 function norm(v: string): string {
@@ -48,6 +50,7 @@ export function ErpBillingSuggestField({
   onChange,
   onCommit,
   inputRef,
+  inputClassName,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [pickIdx, setPickIdx] = useState(-1)
@@ -261,7 +264,10 @@ export function ErpBillingSuggestField({
           inputRef?.(el)
         }}
         autoFocus={autoFocus}
-        className="w-full min-w-0 rounded-xl border border-emerald-300 bg-white px-2 py-1.5 text-xs font-semibold text-[var(--color-jewelry-black,#1a1814)] outline-none focus:border-[var(--kc-accent,#c41e3a)]/50"
+        className={
+          inputClassName ||
+          'w-full min-w-0 rounded-xl border border-emerald-300 bg-white px-2 py-1.5 text-xs font-semibold text-[var(--color-jewelry-black,#1a1814)] outline-none focus:border-[var(--kc-accent,#c41e3a)]/50'
+        }
         placeholder={placeholder}
         value={value === '—' ? '' : value}
         onFocus={() => {

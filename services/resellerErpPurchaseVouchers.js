@@ -123,6 +123,10 @@ async function ensurePurchaseSchema(pool) {
             ADD COLUMN IF NOT EXISTS pv_category VARCHAR(32);
         ALTER TABLE reseller_erp_purchase_vouchers
             ADD COLUMN IF NOT EXISTS metal_rate_per_gm NUMERIC(14, 4);
+        ALTER TABLE reseller_erp_purchase_vouchers
+            ADD COLUMN IF NOT EXISTS style_code VARCHAR(128);
+        ALTER TABLE reseller_erp_purchase_vouchers
+            ADD COLUMN IF NOT EXISTS sku VARCHAR(128);
     `);
 }
 
@@ -156,6 +160,8 @@ function mapPv(row) {
         pending_weight_gm: pendingGm,
         metal_type: row.metal_type,
         pv_category: row.pv_category || null,
+        style_code: row.style_code || null,
+        sku: row.sku || null,
         narration: row.narration,
         ledger_entry_id: row.ledger_entry_id,
         status: row.status,
@@ -558,6 +564,16 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
             } else {
                 pvCategory = pvCategory || null;
             }
+            let styleCode = trimStr(req.body.style_code || req.body.style, 128).toUpperCase();
+            let skuCode = trimStr(req.body.sku, 128).toUpperCase();
+            if (pvCategory !== 'item') {
+                styleCode = '';
+                skuCode = '';
+            } else if (metalLedgerOn && (!styleCode || !skuCode)) {
+                return res.status(400).json({
+                    error: 'Choose a style and SKU from design master when category is Item',
+                });
+            }
             const customerIdRaw = parseInt(String(req.body.customer_id || ''), 10);
             const customerId =
                 Number.isFinite(customerIdRaw) && customerIdRaw > 0 ? customerIdRaw : null;
@@ -570,28 +586,47 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
             }
 
             const metalRatePerGm = computePvMetalRatePerGm(amount, weightGm);
-            const pvRows = await query(
-                `INSERT INTO reseller_erp_purchase_vouchers (
+            const insertPvSql = `INSERT INTO reseller_erp_purchase_vouchers (
                     reseller_user_id, pv_number, entry_date, vendor_name, vendor_bill_ref,
                     amount_inr, weight_kg, metal_type, pv_category, narration, status, customer_id,
-                    metal_rate_per_gm
-                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'open',$11,$12)
-                 RETURNING *`,
-                [
-                    req.user.id,
-                    pvNumber,
-                    entryDate,
-                    vendorName,
-                    vendorBillRef,
-                    amount,
-                    weightKg,
-                    metalType,
-                    pvCategory,
-                    narration,
-                    customerId,
-                    metalRatePerGm,
-                ],
-            );
+                    metal_rate_per_gm, style_code, sku
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'open',$11,$12,$13,$14)
+                 RETURNING *`;
+            const insertPvParams = [
+                req.user.id,
+                pvNumber,
+                entryDate,
+                vendorName,
+                vendorBillRef,
+                amount,
+                weightKg,
+                metalType,
+                pvCategory,
+                narration,
+                customerId,
+                metalRatePerGm,
+                styleCode || null,
+                skuCode || null,
+            ];
+            let pvRows;
+            try {
+                pvRows = await query(insertPvSql, insertPvParams);
+            } catch (e) {
+                const msg = String(e.message || '');
+                if (msg.includes('style_code') || msg.includes('sku')) {
+                    await query(
+                        `ALTER TABLE reseller_erp_purchase_vouchers
+                         ADD COLUMN IF NOT EXISTS style_code VARCHAR(128)`,
+                    );
+                    await query(
+                        `ALTER TABLE reseller_erp_purchase_vouchers
+                         ADD COLUMN IF NOT EXISTS sku VARCHAR(128)`,
+                    );
+                    pvRows = await query(insertPvSql, insertPvParams);
+                } else {
+                    throw e;
+                }
+            }
             const pv = pvRows[0];
 
             const ledgerAmount =
