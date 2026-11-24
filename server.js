@@ -692,9 +692,11 @@ function takeReturnToPath(req, res) {
 }
 
 function buildPostLoginRedirect(clientUrl, returnTo, user) {
-    const email = String(user?.email || '').toLowerCase().trim();
+    const email = String(user?.loginEmail || user?.email || '').toLowerCase().trim();
     const role = encodeURIComponent(user?.role || '');
-    const name = encodeURIComponent(user?.name || 'User');
+    // Google / alias login: show the signed-in identity, not the shared account owner name in DB.
+    const displayName = String(user?.loginName || user?.name || 'User').trim();
+    const name = encodeURIComponent(displayName);
     const q = `auth=success&email=${encodeURIComponent(email)}&role=${role}&name=${name}`;
     const basePath = isSafeReturnPath(returnTo) ? returnTo : '/catalog';
     const pathOnly = basePath.split('?')[0];

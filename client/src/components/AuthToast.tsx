@@ -3,11 +3,32 @@
 import { useEffect, useState, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { CheckCircle2, XCircle, X } from 'lucide-react'
+import { useAuth } from '@/hooks/useAuth'
+
+function loginSuccessLabel(
+  user: unknown,
+  emailFromUrl: string | null,
+  nameFromUrl: string | null,
+) {
+  const u = user as { name?: string; email?: string } | undefined
+  return (u?.name || nameFromUrl || u?.email || emailFromUrl || 'User').trim()
+}
+
+function clearAuthQueryParams(extra?: string[]) {
+  if (typeof window === 'undefined') return
+  const newUrl = new URL(window.location.href)
+  ;['auth', 'email', 'role', 'name', 'reason', ...(extra || [])].forEach((k) =>
+    newUrl.searchParams.delete(k),
+  )
+  window.history.replaceState({}, '', newUrl.toString())
+}
 
 function AuthToastContent() {
   const searchParams = useSearchParams()
+  const auth = useAuth()
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const successDismissScheduledRef = useRef(false)
 
   useEffect(() => {
     const authStatus = searchParams?.get('auth')
@@ -16,42 +37,37 @@ function AuthToastContent() {
       const name = searchParams?.get('name')
       const role = searchParams?.get('role')
       const isAdmin = role === 'super_admin' || role === 'admin'
+      const preferSession = auth.hasChecked && auth.isAuthenticated
+      const label = loginSuccessLabel(preferSession ? auth.user : undefined, email, name)
       setToast({
         type: 'success',
-        message: `Successfully logged in as ${name || email}${isAdmin ? ' (Admin)' : ''}`
+        message: `Successfully logged in as ${label}${isAdmin ? ' (Admin)' : ''}`,
       })
-      if (timerRef.current) clearTimeout(timerRef.current)
-      timerRef.current = setTimeout(() => {
-        setToast(null)
-        if (typeof window !== 'undefined') {
-          const newUrl = new URL(window.location.href)
-          newUrl.searchParams.delete('auth')
-          newUrl.searchParams.delete('email')
-          newUrl.searchParams.delete('role')
-          newUrl.searchParams.delete('name')
-          window.history.replaceState({}, '', newUrl.toString())
-        }
-        timerRef.current = null
-      }, 3500)
+      if (!successDismissScheduledRef.current) {
+        successDismissScheduledRef.current = true
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => {
+          setToast(null)
+          clearAuthQueryParams()
+          timerRef.current = null
+          successDismissScheduledRef.current = false
+        }, 3500)
+      }
     } else if (authStatus === 'failed') {
+      successDismissScheduledRef.current = false
       const reason = searchParams?.get('reason')
       setToast({
         type: 'error',
-        message: `Login failed: ${reason || 'Unknown error'}`
+        message: `Login failed: ${reason || 'Unknown error'}`,
       })
       if (timerRef.current) clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => {
         setToast(null)
-        if (typeof window !== 'undefined') {
-          const newUrl = new URL(window.location.href)
-          newUrl.searchParams.delete('auth')
-          newUrl.searchParams.delete('reason')
-          window.history.replaceState({}, '', newUrl.toString())
-        }
+        clearAuthQueryParams()
         timerRef.current = null
       }, 5000)
     }
-  }, [searchParams])
+  }, [searchParams, auth.hasChecked, auth.isAuthenticated, auth.user])
 
   useEffect(() => {
     return () => {
@@ -82,17 +98,10 @@ function AuthToastContent() {
         <button
           onClick={() => {
             setToast(null)
-            if (typeof window !== 'undefined') {
-              const newUrl = new URL(window.location.href)
-              newUrl.searchParams.delete('auth')
-              newUrl.searchParams.delete('email')
-              newUrl.searchParams.delete('role')
-              newUrl.searchParams.delete('name')
-              newUrl.searchParams.delete('reason')
-              window.history.replaceState({}, '', newUrl.toString())
-            }
+            clearAuthQueryParams()
           }}
           className="p-1 hover:bg-white/20 rounded transition-colors"
+          type="button"
         >
           <X className="w-4 h-4" />
         </button>
