@@ -47,13 +47,35 @@ const RATE_KEYS = [
   'metal_slab_f_pct',
 ] as const
 
+function designMetalBucket(raw: string | null | undefined): 'gold' | 'silver' | null {
+  const m = String(raw || '').trim().toLowerCase()
+  if (!m) return null
+  if (m.includes('gold')) return 'gold'
+  if (m.includes('silver')) return 'silver'
+  return null
+}
+
+function wantMetalBucket(want: string): 'gold' | 'silver' | null {
+  const w = String(want || '').trim().toLowerCase()
+  if (w.startsWith('gold')) return 'gold'
+  if (w.startsWith('silver')) return 'silver'
+  return null
+}
+
 function metalMatch(raw: string | null | undefined, want: string): boolean {
-  const m = String(raw || '').toLowerCase()
-  const w = String(want || '').toLowerCase()
-  if (!m) return true
-  if (w.startsWith('gold')) return m.includes('gold')
-  if (w.startsWith('silver')) return m.includes('silver')
-  return true
+  const bucket = designMetalBucket(raw)
+  const wantBucket = wantMetalBucket(want)
+  if (!wantBucket) return true
+  if (!bucket) return false
+  return bucket === wantBucket
+}
+
+function styleMatchesMetal(style: DesignStyle, want: string): boolean {
+  const styleBucket = designMetalBucket(style.metal_type)
+  if (styleBucket) return metalMatch(style.metal_type, want)
+  const skus = style.skus || []
+  if (!skus.length) return false
+  return skus.some((sk) => metalMatch(sk.metal_type, want))
 }
 
 function emptyRates(): Record<(typeof RATE_KEYS)[number], string> {
@@ -147,10 +169,7 @@ export function ErpSlabsWorkspace() {
   }, [])
 
   const stylesForMetal = useMemo(
-    () =>
-      tree.filter(
-        (s) => metalMatch(s.metal_type, metalType) || s.skus.some((sk) => metalMatch(sk.metal_type, metalType)),
-      ),
+    () => tree.filter((s) => styleMatchesMetal(s, metalType)),
     [tree, metalType],
   )
   const styleOptions = stylesForMetal.map((s) => s.style_code)
@@ -374,6 +393,7 @@ export function ErpSlabsWorkspace() {
               onChange={(e) => {
                 setMetalType(e.target.value)
                 setStyleCode('')
+                setSelectedSkus([])
               }}
             >
               {DESIGN_METAL_TYPE_OPTIONS.map((m) => (

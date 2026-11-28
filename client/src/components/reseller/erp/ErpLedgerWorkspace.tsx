@@ -411,26 +411,18 @@ function rupeesToGrams(amount: string, rate: string): string {
   return (Math.round((a / r) * 1000) / 1000).toFixed(3)
 }
 
-type MetalReceiptOption = {
-  id: number
-  entry_date: string
-  reference_no: string | null
-  gross_wt_gm: number | null
-  metal_pct: number | null
-  remaining_metal_gm: number
-  received_metal_gm: number
-  ledger_category?: string | null
-  customer_name?: string | null
+type MetalPurityPool = {
+  jewellery_metal: string
+  metal_pct: number
+  remaining_gross_gm: number
 }
 
-function formatMetalReceiptLabel(r: MetalReceiptOption) {
-  const ref = r.reference_no || `Entry #${r.id}`
-  const party = r.customer_name?.trim() || 'Customer'
-  const d = r.entry_date ? String(r.entry_date).slice(0, 10) : ''
-  const gross = r.gross_wt_gm != null ? Number(r.gross_wt_gm).toFixed(3) : '—'
-  const pct = r.metal_pct != null ? String(r.metal_pct) : '—'
-  const net = Number(r.remaining_metal_gm).toFixed(3)
-  return `${ref} · ${party} · ${d} · ${gross}g gross @ ${pct}% → ${net}g net`
+function formatMetalPurityPoolLabel(p: MetalPurityPool) {
+  return `${p.metal_pct}% · ${Number(p.remaining_gross_gm).toFixed(3)} g gross available`
+}
+
+function poolPctKey(p: MetalPurityPool) {
+  return `${p.jewellery_metal}:${p.metal_pct}`
 }
 
 function emptyPaymentForm(metalLedger = false) {
@@ -466,6 +458,7 @@ function emptyPaymentForm(metalLedger = false) {
     opening_side: 'credit' as 'credit' | 'debit',
     ledger_category: '',
     source_metal_entry_id: '',
+    issue_pool_pct: '',
   }
 }
 
@@ -573,8 +566,9 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
   const [accountResetToken, setAccountResetToken] = useState(0)
   const [focusCustomerId, setFocusCustomerId] = useState<number | null>(null)
   const [form, setForm] = useState(emptyPaymentForm)
-  const [metalReceipts, setMetalReceipts] = useState<MetalReceiptOption[]>([])
-  const [metalReceiptsLoading, setMetalReceiptsLoading] = useState(false)
+  const [metalPools, setMetalPools] = useState<MetalPurityPool[]>([])
+  const [metalPoolsLoading, setMetalPoolsLoading] = useState(false)
+  const [issueMaxGrossG, setIssueMaxGrossG] = useState(0)
 
   const [resolveCustomerId, setResolveCustomerId] = useState<Record<number, string>>({})
   const [importFiles, setImportFiles] = useState<ImportDraftFile[]>([])
@@ -910,43 +904,38 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
     return (summary.received_inr || 0) - (summary.paid_out_inr || 0)
   }, [summary])
 
-  const metalWeightsLocked = useMemo(
+  const metalPctLocked = useMemo(
     () =>
       form.currency === 'metal' &&
       form.metal_kind === 'issued' &&
-      !!form.source_metal_entry_id &&
+      !!form.issue_pool_pct &&
       !canEditLedgerDate,
-    [form.currency, form.metal_kind, form.source_metal_entry_id, canEditLedgerDate],
+    [form.currency, form.metal_kind, form.issue_pool_pct, canEditLedgerDate],
   )
 
   useEffect(() => {
     if (form.currency !== 'metal' || form.metal_kind !== 'issued') {
-      setMetalReceipts([])
+      setMetalPools([])
+      setIssueMaxGrossG(0)
       return
     }
     let cancelled = false
-    setMetalReceiptsLoading(true)
+    setMetalPoolsLoading(true)
     void axios
-      .get<{ receipts: MetalReceiptOption[] }>('/api/reseller/erp/ledger/metal-receipts', {
+      .get<{ pools: MetalPurityPool[] }>('/api/reseller/erp/ledger/metal-purity-pools', {
         params: {
           jewellery_metal: form.jewellery_metal,
           ledger_scope: laneMode ? 'lane' : 'official',
         },
       })
       .then((res) => {
-        if (!cancelled) setMetalReceipts(res.data.receipts || [])
+        if (!cancelled) setMetalPools(res.data.pools || [])
       })
-      .catch((err) => {
-        if (!cancelled) {
-          setMetalReceipts([])
-          const msg = erpErr(err)
-          if (msg && msg !== 'Request failed') {
-            console.warn('metal-receipts:', msg)
-          }
-        }
+      .catch(() => {
+        if (!cancelled) setMetalPools([])
       })
       .finally(() => {
-        if (!cancelled) setMetalReceiptsLoading(false)
+        if (!cancelled) setMetalPoolsLoading(false)
       })
     return () => {
       cancelled = true
@@ -954,18 +943,19 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
   }, [form.currency, form.metal_kind, form.jewellery_metal, laneMode])
 
   useEffect(() => {
-    if (!form.source_metal_entry_id || form.metal_kind !== 'issued') return
-    const stillThere = metalReceipts.some((r) => String(r.id) === form.source_metal_entry_id)
-    if (!stillThere && !metalReceiptsLoading) {
+    if (!form.issue_pool_pct || form.metal_kind !== 'issued') return
+    const stillThere = metalPools.some((p) => poolPctKey(p) === form.issue_pool_pct)
+    if (!stillThere && !metalPoolsLoading) {
       setForm((f) => ({
         ...f,
-        source_metal_entry_id: '',
+        issue_pool_pct: '',
         gross_wt_gm: '',
         metal_pct: '',
         metal_gm: '',
       }))
+      setIssueMaxGrossG(0)
     }
-  }, [metalReceipts, metalReceiptsLoading, form.source_metal_entry_id, form.metal_kind])
+  }, [metalPools, metalPoolsLoading, form.issue_pool_pct, form.metal_kind])
 
   const saveEntry = async () => {
     const amount = Number(String(form.amount_inr).replace(/[,₹\s]/g, ''))
@@ -1001,6 +991,18 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
           alert('Enter leftover metal grams and the metal rate (₹/g)')
           return
         }
+      } else if (form.metal_kind === 'issued') {
+        const gross = Number(String(form.gross_wt_gm).replace(/[,gG\s]/g, ''))
+        if (!(Number.isFinite(gross) && gross >= 0.0005)) {
+          alert('Enter gross weight (g) to issue')
+          return
+        }
+        const fromFine = fineGmFromGrossPct(String(gross), form.metal_pct)
+        metalGm = fromFine != null ? Number(fromFine) : metalGm
+        if (!Number.isFinite(metalGm) || Math.abs(metalGm) < 0.0005) {
+          alert('Select purity % and enter gross weight')
+          return
+        }
       } else if (!Number.isFinite(metalGm) || Math.abs(metalGm) < 0.0005) {
         alert('Enter metal weight in grams')
         return
@@ -1030,11 +1032,18 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
       form.metal_kind === 'issued' &&
       metalLedgerShop &&
       !canEditLedgerDate &&
-      metalReceipts.length > 0 &&
-      !form.source_metal_entry_id
+      metalPools.length > 0 &&
+      !form.issue_pool_pct
     ) {
-      alert('Select which received metal to issue')
+      alert('Select metal % from shop stock')
       return
+    }
+    if (isMetal && form.metal_kind === 'issued' && issueMaxGrossG > 0) {
+      const g = Number(String(form.gross_wt_gm).replace(/[,gG\s]/g, ''))
+      if (Number.isFinite(g) && g > issueMaxGrossG + 0.0005) {
+        alert(`Cannot issue more than ${issueMaxGrossG.toFixed(3)} g gross for this purity`)
+        return
+      }
     }
     setBusy(true)
     try {
@@ -1097,13 +1106,10 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
         ledger_category: form.ledger_category || null,
         gross_wt_gm: isMetal && form.gross_wt_gm.trim() ? form.gross_wt_gm : undefined,
         metal_pct: isMetal && form.metal_pct.trim() ? form.metal_pct : undefined,
-        source_ledger_entry_id:
-          isMetal && form.metal_kind === 'issued' && form.source_metal_entry_id
-            ? Number(form.source_metal_entry_id)
-            : undefined,
       })
       setForm(emptyPaymentForm(metalLedgerShop))
-      setMetalReceipts([])
+      setMetalPools([])
+      setIssueMaxGrossG(0)
       setPayCustomerQ('')
       setPayCustomerLabel('')
       setPayCustomerResults([])
@@ -2076,14 +2082,6 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                         ...form,
                         customer_id: String(c.id),
                         is_suspense: false,
-                        ...(form.metal_kind === 'issued'
-                          ? {
-                              source_metal_entry_id: '',
-                              gross_wt_gm: '',
-                              metal_pct: '',
-                              metal_gm: '',
-                            }
-                          : {}),
                       })
                       setPayCustomerQ(c.name)
                       setPayCustomerLabel(c.mobile ? `${c.name} · ${c.mobile}` : c.name)
@@ -2105,14 +2103,6 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                               ...form,
                               customer_id: String(c.id),
                               is_suspense: false,
-                              ...(form.metal_kind === 'issued'
-                                ? {
-                                    source_metal_entry_id: '',
-                                    gross_wt_gm: '',
-                                    metal_pct: '',
-                                    metal_gm: '',
-                                  }
-                                : {}),
                             })
                             setPayCustomerQ(c.name)
                             setPayCustomerLabel(c.mobile ? `${c.name} · ${c.mobile}` : c.name)
@@ -2468,20 +2458,21 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                   <select
                     className={`${erpInputCls} mt-1`}
                     value={form.jewellery_metal}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      setIssueMaxGrossG(0)
                       setForm({
                         ...form,
                         jewellery_metal: e.target.value as 'silver' | 'gold',
                         ...(form.metal_kind === 'issued'
                           ? {
-                              source_metal_entry_id: '',
+                              issue_pool_pct: '',
                               gross_wt_gm: '',
                               metal_pct: '',
                               metal_gm: '',
                             }
                           : {}),
                       })
-                    }
+                    }}
                   >
                     <option value="silver">Silver</option>
                     <option value="gold">Gold</option>
@@ -2494,17 +2485,20 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                     value={form.metal_kind}
                     onChange={(e) => {
                       const metal_kind = e.target.value as typeof form.metal_kind
+                      if (metal_kind !== 'issued') setIssueMaxGrossG(0)
                       setForm({
                         ...form,
                         metal_kind,
                         ...(metal_kind !== 'issued'
                           ? {
-                              source_metal_entry_id: '',
+                              issue_pool_pct: '',
                               gross_wt_gm: '',
                               metal_pct: '',
                               metal_gm: '',
                             }
-                          : {}),
+                          : metal_kind === 'issued'
+                            ? { issue_pool_pct: '', gross_wt_gm: '', metal_pct: '', metal_gm: '' }
+                            : {}),
                       })
                     }}
                   >
@@ -2538,55 +2532,57 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                 ) : null}
                 {form.metal_kind === 'issued' ? (
                   <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55 sm:col-span-2">
-                    Issue from received metal
+                    Shop stock purity (gross g)
                     <select
                       className={`${erpInputCls} mt-1`}
-                      value={form.source_metal_entry_id}
-                      disabled={metalReceiptsLoading}
+                      value={form.issue_pool_pct}
+                      disabled={metalPoolsLoading}
                       onChange={(e) => {
-                        const source_metal_entry_id = e.target.value
-                        if (!source_metal_entry_id) {
+                        const issue_pool_pct = e.target.value
+                        if (!issue_pool_pct) {
                           setForm({
                             ...form,
-                            source_metal_entry_id: '',
+                            issue_pool_pct: '',
                             gross_wt_gm: '',
                             metal_pct: '',
                             metal_gm: '',
                           })
+                          setIssueMaxGrossG(0)
                           return
                         }
-                        const picked = metalReceipts.find((r) => String(r.id) === source_metal_entry_id)
+                        const picked = metalPools.find((p) => poolPctKey(p) === issue_pool_pct)
                         if (!picked) {
-                          setForm({ ...form, source_metal_entry_id })
+                          setForm({ ...form, issue_pool_pct })
                           return
                         }
+                        setIssueMaxGrossG(Number(picked.remaining_gross_gm) || 0)
                         setForm({
                           ...form,
-                          source_metal_entry_id,
-                          gross_wt_gm:
-                            picked.gross_wt_gm != null ? String(picked.gross_wt_gm) : form.gross_wt_gm,
-                          metal_pct: picked.metal_pct != null ? String(picked.metal_pct) : form.metal_pct,
-                          metal_gm: String(picked.remaining_metal_gm),
-                          ledger_category: picked.ledger_category || form.ledger_category,
+                          issue_pool_pct,
+                          metal_pct: String(picked.metal_pct),
+                          gross_wt_gm: '',
+                          metal_gm: '',
+                          ledger_category: form.ledger_category || 'metal',
                         })
                       }}
                     >
                       <option value="">
-                        {metalReceiptsLoading
-                          ? 'Loading shop metal receipts…'
-                          : metalReceipts.length
-                            ? 'Select received metal to issue (latest first)…'
-                            : 'No received metal available in the shop'}
+                        {metalPoolsLoading
+                          ? 'Loading shop metal stock…'
+                          : metalPools.length
+                            ? 'Select purity % in stock…'
+                            : 'No metal in shop stock — receive metal first'}
                       </option>
-                      {metalReceipts.map((r) => (
-                        <option key={r.id} value={String(r.id)}>
-                          {formatMetalReceiptLabel(r)}
+                      {metalPools.map((p) => (
+                        <option key={poolPctKey(p)} value={poolPctKey(p)}>
+                          {formatMetalPurityPoolLabel(p)}
                         </option>
                       ))}
                     </select>
-                    {form.source_metal_entry_id && metalWeightsLocked ? (
+                    {form.issue_pool_pct ? (
                       <span className="mt-1 block text-[11px] text-[var(--color-jewelry-black,#1a1814)]/60">
-                        Weights are locked to the selected receipt. Ask an ERP admin to edit grams or purity.
+                        Enter gross grams to issue (max {issueMaxGrossG.toFixed(3)} g at this %).
+                        {metalPctLocked ? ' Purity is locked — ask an ERP admin to change %.' : ''}
                       </span>
                     ) : null}
                   </label>
@@ -2606,30 +2602,37 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                 <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
                   Gross Wt (g)
                   <input
-                    className={`${erpInputCls} mt-1${metalWeightsLocked ? ' cursor-not-allowed bg-[var(--color-slate-900,#f7f4ef)]' : ''}`}
+                    className={`${erpInputCls} mt-1`}
                     inputMode="decimal"
-                    readOnly={metalWeightsLocked}
-                    aria-readonly={metalWeightsLocked}
                     value={form.gross_wt_gm}
                     onChange={(e) => {
-                      if (metalWeightsLocked) return
-                      const gross_wt_gm = e.target.value.replace(/[^\d.]/g, '')
+                      let gross_wt_gm = e.target.value.replace(/[^\d.]/g, '')
+                      if (form.metal_kind === 'issued' && issueMaxGrossG > 0) {
+                        const g = Number(gross_wt_gm)
+                        if (Number.isFinite(g) && g > issueMaxGrossG) {
+                          gross_wt_gm = String(issueMaxGrossG)
+                        }
+                      }
                       const metal_gm = fineGmFromGrossPct(gross_wt_gm, form.metal_pct) || form.metal_gm
                       setForm({ ...form, gross_wt_gm, metal_gm })
                     }}
-                    placeholder="e.g. 10"
+                    placeholder={
+                      form.metal_kind === 'issued' && issueMaxGrossG > 0
+                        ? `Max ${issueMaxGrossG.toFixed(3)} g`
+                        : 'e.g. 10'
+                    }
                   />
                 </label>
                 <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
                   Metal %
                   <input
-                    className={`${erpInputCls} mt-1${metalWeightsLocked ? ' cursor-not-allowed bg-[var(--color-slate-900,#f7f4ef)]' : ''}`}
+                    className={`${erpInputCls} mt-1${metalPctLocked ? ' cursor-not-allowed bg-[var(--color-slate-900,#f7f4ef)]' : ''}`}
                     inputMode="decimal"
-                    readOnly={metalWeightsLocked}
-                    aria-readonly={metalWeightsLocked}
+                    readOnly={metalPctLocked}
+                    aria-readonly={metalPctLocked}
                     value={form.metal_pct}
                     onChange={(e) => {
-                      if (metalWeightsLocked) return
+                      if (metalPctLocked) return
                       const metal_pct = e.target.value.replace(/[^\d.]/g, '')
                       const metal_gm = fineGmFromGrossPct(form.gross_wt_gm, metal_pct) || form.metal_gm
                       setForm({ ...form, metal_pct, metal_gm })
@@ -2640,13 +2643,13 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                 <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
                   Weight (g)
                   <input
-                    className={`${erpInputCls} mt-1${metalWeightsLocked ? ' cursor-not-allowed bg-[var(--color-slate-900,#f7f4ef)]' : ''}`}
+                    className={`${erpInputCls} mt-1${form.metal_kind === 'issued' && form.issue_pool_pct ? ' cursor-not-allowed bg-[var(--color-slate-900,#f7f4ef)]' : ''}`}
                     inputMode="decimal"
-                    readOnly={metalWeightsLocked}
-                    aria-readonly={metalWeightsLocked}
+                    readOnly={form.metal_kind === 'issued' && !!form.issue_pool_pct}
+                    aria-readonly={form.metal_kind === 'issued' && !!form.issue_pool_pct}
                     value={form.metal_gm}
                     onChange={(e) => {
-                      if (metalWeightsLocked) return
+                      if (form.metal_kind === 'issued' && form.issue_pool_pct) return
                       setForm({ ...form, metal_gm: e.target.value.replace(/[^\d.]/g, '') })
                     }}
                     placeholder={form.metal_kind === 'mc_adjust' ? 'Optional if MC + rate filled' : 'e.g. 200'}

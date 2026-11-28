@@ -1,7 +1,9 @@
 const { isErpShopAdmin } = require('./resellerErpOperators');
 const { loadJewelleryLedgerMetalEnabled } = require('./erpJewelleryLedgerSettings');
+const { normalizeJewelleryMetal } = require('./erpLedgerMetal');
 
 const COUNTERS = ['metal', 'item', 'approval', 'stock'];
+const JEWELLERY_METALS = new Set(['gold', 'silver']);
 
 function gm(n) {
     const v = Number(n);
@@ -57,7 +59,20 @@ function linesWeightGm(lines) {
     return t;
 }
 
-async function counterMovements(query, resellerUserId, from, to) {
+async function counterMovements(query, resellerUserId, from, to, jewelleryMetalFilter) {
+    const jm = normalizeJewelleryMetal(jewelleryMetalFilter);
+    const params = [resellerUserId, from, to];
+    let catSql = `LOWER(TRIM(COALESCE(ledger_category, ''))) IN ('metal', 'item')`;
+    if (jm && JEWELLERY_METALS.has(jm)) {
+        params.push(jm);
+        catSql = `(
+            LOWER(TRIM(COALESCE(ledger_category, ''))) = 'item'
+            OR (
+                LOWER(TRIM(COALESCE(ledger_category, ''))) = 'metal'
+                AND LOWER(TRIM(COALESCE(jewellery_metal, 'silver'))) = $${params.length}
+            )
+        )`;
+    }
     const metalItem = await query(
         `
         SELECT
@@ -75,10 +90,10 @@ async function counterMovements(query, resellerUserId, from, to) {
           AND COALESCE(ledger_scope, 'official') = 'official'
           AND entry_date >= $2::date
           AND entry_date <= $3::date
-          AND LOWER(TRIM(COALESCE(ledger_category, ''))) IN ('metal', 'item')
+          AND ${catSql}
         GROUP BY 1
         `,
-        [resellerUserId, from, to],
+        params,
     );
 
     const byCat = { metal: { receipt: 0, issue: 0 }, item: { receipt: 0, issue: 0 } };
@@ -147,28 +162,51 @@ async function loadOpenings(query, resellerUserId) {
     return map;
 }
 
-async function buildCounterReport(query, resellerUserId, from, to) {
+function metalCounterLabel(baseKey, jewelleryMetal) {
+    const jm = normalizeJewelleryMetal(jewelleryMetal);
+    if (baseKey === 'metal' && jm && JEWELLERY_METALS.has(jm)) {
+        return `metal ${jm}`;
+    }
+    return baseKey;
+}
+
+function openingKeyForCounter(baseKey, jewelleryMetal) {
+    const jm = normalizeJewelleryMetal(jewelleryMetal);
+    if (baseKey === 'metal' && jm && JEWELLERY_METALS.has(jm)) {
+        return `metal_${jm}`;
+    }
+    return baseKey;
+}
+
+async function buildCounterReport(query, resellerUserId, from, to, opts = {}) {
+    const jewelleryMetal = normalizeJewelleryMetal(opts.jewelleryMetal);
     const openings = await loadOpenings(query, resellerUserId);
     const rows = [];
     for (const key of COUNTERS) {
-        const open = openings[key] || { opening_gm: 0, opening_date: from };
+        const openKey = openingKeyForCounter(key, jewelleryMetal);
+        const open =
+            openings[openKey] ||
+            (key === 'metal' ? openings[key] : null) ||
+            { opening_gm: 0, opening_date: from };
         const start = open.opening_date && open.opening_date < from ? open.opening_date : from;
         const beforeTo = from > start
-            ? await counterMovements(query, resellerUserId, start, addDaysIso(from, -1))
+            ? await counterMovements(query, resellerUserId, start, addDaysIso(from, -1), jewelleryMetal)
             : null;
-        const period = await counterMovements(query, resellerUserId, from, to);
+        const period = await counterMovements(query, resellerUserId, from, to, jewelleryMetal);
         const mvBefore = beforeTo && from > start ? beforeTo[key] : { receipt: 0, issue: 0 };
         const mv = period[key];
         const opening = gm(open.opening_gm) + gm(mvBefore.receipt) - gm(mvBefore.issue);
         const receipt = gm(mv.receipt);
         const issue = gm(mv.issue);
         rows.push({
-            counter: key,
+            counter: metalCounterLabel(key, jewelleryMetal),
             opening,
             receipt,
             issue,
             closing: opening + receipt - issue,
             opening_date: open.opening_date || null,
+            counter_key: key,
+            opening_store_key: openKey,
         });
     }
     const total = rows.reduce(
@@ -180,7 +218,7 @@ async function buildCounterReport(query, resellerUserId, from, to) {
         }),
         { opening: 0, receipt: 0, issue: 0, closing: 0 },
     );
-    return { from, to, rows, total, openings };
+    return { from, to, rows, total, openings, jewellery_metal: jewelleryMetal || null };
 }
 
 function registerResellerErpCounterReportRoutes(app, { query, pool, checkAuth, requireJson, erpGate }) {
@@ -194,7 +232,12 @@ function registerResellerErpCounterReportRoutes(app, { query, pool, checkAuth, r
             const today = new Date().toISOString().slice(0, 10);
             const from = isoDate(req.query.from, today);
             const to = isoDate(req.query.to, today);
-            const report = await buildCounterReport(query, req.user.id, from, to);
+            const jewelleryMetal = normalizeJewelleryMetal(
+                req.query.jewellery_metal || req.query.jewelleryMetal || req.query.metal,
+            );
+            const report = await buildCounterReport(query, req.user.id, from, to, {
+                jewelleryMetal,
+            });
             res.json(report);
         } catch (e) {
             console.error('counter-wise report:', e);
@@ -217,7 +260,8 @@ function registerResellerErpCounterReportRoutes(app, { query, pool, checkAuth, r
                 return res.status(403).json({ error: 'Only an ERP admin can set counter openings.' });
             }
             const key = String(req.body.counter_key || '').trim().toLowerCase();
-            if (!COUNTERS.includes(key)) return res.status(400).json({ error: 'Invalid counter' });
+            const allowed = [...COUNTERS, 'metal_silver', 'metal_gold'];
+            if (!allowed.includes(key)) return res.status(400).json({ error: 'Invalid counter' });
             const openingGm = gm(req.body.opening_gm);
             const openingDate = isoDate(req.body.opening_date, new Date().toISOString().slice(0, 10));
             const rows = await query(

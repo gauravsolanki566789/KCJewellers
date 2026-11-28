@@ -14,6 +14,7 @@ export type CounterWisePdfReport = {
   from: string
   to: string
   shopName?: string
+  jewelleryMetal?: 'gold' | 'silver' | null
   rows: CounterWisePdfRow[]
   total: { opening: number; receipt: number; issue: number; closing: number }
 }
@@ -54,7 +55,10 @@ function CounterWiseDocument({ report }: { report: CounterWisePdfReport }) {
       <Page size="A4" style={styles.page}>
         {report.shopName ? <Text style={styles.shopName}>{report.shopName}</Text> : null}
         <Text style={styles.title}>Counter wise report</Text>
-        <Text style={styles.sub}>Weights in grams · {period}</Text>
+        <Text style={styles.sub}>
+          Weights in grams
+          {report.jewelleryMetal ? ` · ${report.jewelleryMetal} metal filter` : ''} · {period}
+        </Text>
         <View style={styles.header}>
           <Text style={styles.cName}>Counter</Text>
           <Text style={styles.cNum}>Opening</Text>

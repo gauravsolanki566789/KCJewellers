@@ -14,12 +14,14 @@ import { appAlert } from '@/lib/app-notice'
 type CounterKey = 'metal' | 'item' | 'approval' | 'stock'
 
 type CounterRow = {
-  counter: CounterKey
+  counter: string
   opening: number
   receipt: number
   issue: number
   closing: number
   opening_date?: string | null
+  counter_key?: CounterKey
+  opening_store_key?: string
 }
 
 type Report = {
@@ -56,6 +58,7 @@ export function ErpCounterWiseReport({
   const isAdmin = operator?.role === 'admin'
   const [from, setFrom] = useState(defaultFrom)
   const [to, setTo] = useState(defaultTo)
+  const [jewelleryMetal, setJewelleryMetal] = useState<'silver' | 'gold'>('silver')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [data, setData] = useState<Report | null>(null)
@@ -71,12 +74,14 @@ export function ErpCounterWiseReport({
     setErr(null)
     try {
       const res = await axios.get<Report>('/api/reseller/erp/ledger/reports/counter-wise', {
-        params: { from, to },
+        params: { from, to, jewellery_metal: jewelleryMetal },
       })
       setData(res.data)
       const next = { ...openDraft }
       for (const c of COUNTERS) {
-        const o = res.data.openings?.[c.key]
+        const row = res.data.rows.find((r) => r.counter_key === c.key || r.counter === c.key)
+        const storeKey = row?.opening_store_key || (c.key === 'metal' ? `metal_${jewelleryMetal}` : c.key)
+        const o = res.data.openings?.[storeKey] || (c.key === 'metal' ? res.data.openings?.[c.key] : undefined)
         next[c.key] = {
           gm: o ? exactGm(o.opening_gm) : next[c.key].gm,
           date: o?.opening_date || from,
@@ -90,7 +95,7 @@ export function ErpCounterWiseReport({
       setBusy(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to])
+  }, [from, to, jewelleryMetal])
 
   useEffect(() => {
     void load()
@@ -98,8 +103,9 @@ export function ErpCounterWiseReport({
 
   const saveOpening = async (key: CounterKey) => {
     try {
+      const storeKey = key === 'metal' ? `metal_${jewelleryMetal}` : key
       await axios.put('/api/reseller/erp/ledger/counter-openings', {
-        counter_key: key,
+        counter_key: storeKey,
         opening_gm: Number(openDraft[key].gm) || 0,
         opening_date: openDraft[key].date || from,
       })
@@ -122,7 +128,7 @@ export function ErpCounterWiseReport({
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
-    a.download = `counter-wise-${data.from}-${data.to}.csv`
+    a.download = `counter-wise-${jewelleryMetal}-${data.from}-${data.to}.csv`
     a.click()
     URL.revokeObjectURL(a.href)
   }
@@ -134,6 +140,7 @@ export function ErpCounterWiseReport({
       from: data.from,
       to: data.to,
       shopName: String(u?.shop_name || u?.business_name || u?.name || '').trim() || undefined,
+      jewelleryMetal,
       rows: data.rows,
       total: data.total,
     })
@@ -150,7 +157,18 @@ export function ErpCounterWiseReport({
       </div>
 
       <div className={`${erpCardCls} space-y-3`}>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+            Metal in report
+            <select
+              className={`${erpInputCls} mt-1`}
+              value={jewelleryMetal}
+              onChange={(e) => setJewelleryMetal(e.target.value as 'silver' | 'gold')}
+            >
+              <option value="silver">Silver</option>
+              <option value="gold">Gold</option>
+            </select>
+          </label>
           <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
             From
             <ErpDateInput className={`${erpInputCls} mt-1`} value={from} onChange={setFrom} />
@@ -192,7 +210,9 @@ export function ErpCounterWiseReport({
           <div className="grid gap-3 sm:grid-cols-2">
             {COUNTERS.map((c) => (
               <div key={c.key} className="rounded-xl border border-[var(--color-slate-700,#e8e4df)] bg-white p-3">
-                <p className="text-sm font-semibold capitalize text-[var(--color-jewelry-black,#1a1814)]">{c.label}</p>
+                <p className="text-sm font-semibold capitalize text-[var(--color-jewelry-black,#1a1814)]">
+                  {c.key === 'metal' ? `metal ${jewelleryMetal}` : c.label}
+                </p>
                 <label className="mt-2 block text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
                   Opening (g)
                   <input

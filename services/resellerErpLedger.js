@@ -301,6 +301,67 @@ async function listAvailableMetalReceipts(query, resellerUserId, opts) {
     return out;
 }
 
+function grossGmForLedgerMetalRow(row) {
+    let gross = parseGrossWtGm(row.gross_wt_gm);
+    const pct = parseMetalPct(row.metal_pct) ?? 100;
+    const net = Math.abs(parseMetalGm(row.metal_gm) || 0);
+    if (gross != null && gross > 0) return gross;
+    if (net > 0 && pct > 0) return roundMetalGm(net / (pct / 100));
+    return net > 0 ? net : 0;
+}
+
+/** Shop stock by jewellery metal + purity % (gross grams in − gross grams out). */
+async function listMetalPurityPools(query, resellerUserId, opts) {
+    const jewelleryMetal = normalizeJewelleryMetal(opts.jewelleryMetal);
+    const ledgerScope = LEDGER_SCOPES.has(opts.ledgerScope) ? opts.ledgerScope : 'official';
+    const rows = await query(
+        `SELECT entry_type, metal_gm, gross_wt_gm, metal_pct, jewellery_metal, ledger_category, payment_mode
+         FROM reseller_erp_ledger_entries
+         WHERE reseller_user_id = $1
+           AND ledger_scope = $2
+           AND fixed_asset_metal = false
+           AND is_suspense = false
+           AND metal_gm IS NOT NULL
+           AND ABS(metal_gm) >= 0.0005
+           AND entry_type IN ('payment_in', 'payment_out')`,
+        [resellerUserId, ledgerScope],
+    );
+    const buckets = new Map();
+    for (const row of rows) {
+        if (row.entry_type === 'payment_in') {
+            const mode = String(row.payment_mode || '').toLowerCase();
+            const cat = String(row.ledger_category || '').toLowerCase().replace(/[\s-]+/g, '_');
+            if (mode !== 'metal' && cat !== 'metal' && row.gross_wt_gm == null) continue;
+        }
+        const jm = normalizeJewelleryMetal(row.jewellery_metal) || 'silver';
+        if (jewelleryMetal && jm !== jewelleryMetal) continue;
+        const pct = parseMetalPct(row.metal_pct) ?? 100;
+        const key = `${jm}:${pct}`;
+        const gross = grossGmForLedgerMetalRow(row);
+        if (!(gross >= 0.0005)) continue;
+        const b = buckets.get(key) || {
+            jewellery_metal: jm,
+            metal_pct: pct,
+            remaining_gross_gm: 0,
+        };
+        if (row.entry_type === 'payment_in') b.remaining_gross_gm += gross;
+        else b.remaining_gross_gm -= gross;
+        buckets.set(key, b);
+    }
+    return [...buckets.values()]
+        .filter((b) => b.remaining_gross_gm > 0.0005)
+        .map((b) => ({
+            ...b,
+            remaining_gross_gm: roundMetalGm(b.remaining_gross_gm),
+        }))
+        .sort((a, b) => b.metal_pct - a.metal_pct);
+}
+
+function pctKeysMatch(a, b) {
+    if (a == null || b == null) return false;
+    return Math.abs(Number(a) - Number(b)) < 0.00015;
+}
+
 async function ensureLedgerSchema(pool) {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS reseller_erp_ledger_import_batches (
@@ -798,6 +859,23 @@ function registerResellerErpLedgerRoutes(app, deps) {
 
     ensureLedgerSchema(pool).catch((e) => console.warn('erp ledger schema:', e.message));
 
+    app.get('/api/reseller/erp/ledger/metal-purity-pools', checkAuth, erpGate, async (req, res) => {
+        try {
+            const jewelleryMetal = normalizeJewelleryMetal(
+                req.query.jewellery_metal || req.query.jewelleryMetal || req.query.metal,
+            );
+            const ledgerScope = resolveRequestedLedgerScope(req, req.query.ledger_scope);
+            const pools = await listMetalPurityPools(query, req.user.id, {
+                jewelleryMetal,
+                ledgerScope,
+            });
+            res.json({ pools });
+        } catch (e) {
+            console.error('erp ledger metal-purity-pools:', e);
+            res.status(500).json({ error: e.message || 'Failed to load metal stock by purity' });
+        }
+    });
+
     app.get('/api/reseller/erp/ledger/metal-receipts', checkAuth, erpGate, async (req, res) => {
         try {
             const jewelleryMetal = normalizeJewelleryMetal(
@@ -1138,61 +1216,41 @@ function registerResellerErpLedgerRoutes(app, deps) {
                 }
             }
             if (metalKind === 'issued' && !fixedAssetMetal && customerId) {
-                const receipts = await listAvailableMetalReceipts(query, req.user.id, {
+                const pools = await listMetalPurityPools(query, req.user.id, {
                     jewelleryMetal,
                     ledgerScope,
                 });
                 const shopAdmin = isErpShopAdmin(req);
-                if (!shopAdmin && receipts.length > 0 && !sourceLedgerEntryId) {
-                    return res.status(400).json({ error: 'Select which received metal to issue' });
+                if (metalPct == null || metalPct <= 0) {
+                    if (!shopAdmin && pools.length > 0) {
+                        return res.status(400).json({ error: 'Select metal % from shop stock' });
+                    }
                 }
-                if (sourceLedgerEntryId) {
-                    const src = receipts.find((x) => x.id === sourceLedgerEntryId);
-                    if (!src) {
-                        return res.status(400).json({ error: 'Selected metal receipt is not available' });
+                let issueGross =
+                    grossWtGm != null && grossWtGm > 0
+                        ? grossWtGm
+                        : resolvedMetalGm != null && metalPct != null && metalPct > 0
+                          ? roundMetalGm(Math.abs(resolvedMetalGm) / (metalPct / 100))
+                          : null;
+                if (!(issueGross != null && issueGross >= 0.0005)) {
+                    return res.status(400).json({ error: 'Enter gross weight (g) to issue' });
+                }
+                if (metalPct != null && pools.length > 0) {
+                    const pool = pools.find((p) => pctKeysMatch(p.metal_pct, metalPct));
+                    if (!pool) {
+                        return res.status(400).json({ error: 'No shop stock for this metal %' });
                     }
-                    const issueGm = Math.abs(resolvedMetalGm || 0);
-                    if (issueGm < 0.0005) {
-                        return res.status(400).json({ error: 'Enter metal weight in grams' });
-                    }
-                    if (issueGm > src.remaining_metal_gm + 0.0005) {
+                    if (issueGross > pool.remaining_gross_gm + 0.0005) {
                         return res.status(400).json({
-                            error: `Only ${src.remaining_metal_gm.toFixed(3)} g remaining on ${src.reference_no || 'receipt'}`,
+                            error: `Only ${pool.remaining_gross_gm.toFixed(3)} g gross available at ${pool.metal_pct}%`,
                         });
                     }
-                    if (!shopAdmin) {
-                        if (
-                            grossWtGm != null &&
-                            src.gross_wt_gm != null &&
-                            Math.abs(grossWtGm - src.gross_wt_gm) > 0.0005
-                        ) {
-                            return res.status(400).json({ error: 'Gross weight is locked to the selected receipt' });
-                        }
-                        if (
-                            metalPct != null &&
-                            src.metal_pct != null &&
-                            Math.abs(metalPct - src.metal_pct) > 0.0001
-                        ) {
-                            return res.status(400).json({ error: 'Metal % is locked to the selected receipt' });
-                        }
-                        grossWtGm = src.gross_wt_gm ?? grossWtGm;
-                        metalPct = src.metal_pct ?? metalPct;
-                        const lockGross = grossWtGm ?? src.gross_wt_gm;
-                        const lockPct = metalPct ?? src.metal_pct;
-                        if (lockGross != null && lockPct != null) {
-                            const expectedFine = roundMetalGm(lockGross * (lockPct / 100));
-                            if (Math.abs(issueGm - expectedFine) > 0.001) {
-                                return res.status(400).json({
-                                    error: 'Net weight must match gross × purity for the selected receipt',
-                                });
-                            }
-                        } else if (Math.abs(issueGm - src.remaining_metal_gm) > 0.001) {
-                            return res.status(400).json({ error: 'Net weight is locked to the selected receipt' });
-                        }
-                    } else if (grossWtGm == null) grossWtGm = src.gross_wt_gm;
-                    if (metalPct == null) metalPct = src.metal_pct;
-                    if (!jewelleryMetal && src.jewellery_metal) jewelleryMetal = src.jewellery_metal;
                 }
+                grossWtGm = issueGross;
+                if (metalPct != null && metalPct > 0) {
+                    resolvedMetalGm = roundMetalGm(issueGross * (metalPct / 100));
+                }
+                sourceLedgerEntryId = null;
             } else if (metalKind !== 'issued') {
                 sourceLedgerEntryId = null;
             }
