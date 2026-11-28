@@ -936,8 +936,14 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
       .then((res) => {
         if (!cancelled) setMetalReceipts(res.data.receipts || [])
       })
-      .catch(() => {
-        if (!cancelled) setMetalReceipts([])
+      .catch((err) => {
+        if (!cancelled) {
+          setMetalReceipts([])
+          const msg = erpErr(err)
+          if (msg && msg !== 'Request failed') {
+            console.warn('metal-receipts:', msg)
+          }
+        }
       })
       .finally(() => {
         if (!cancelled) setMetalReceiptsLoading(false)

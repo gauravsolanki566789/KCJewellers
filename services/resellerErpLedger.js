@@ -258,13 +258,12 @@ async function listAvailableMetalReceipts(query, resellerUserId, opts) {
              GROUP BY source_ledger_entry_id
          ) iss ON iss.source_ledger_entry_id = e.id
          WHERE e.reseller_user_id = $1
+           AND e.ledger_scope = $2
            AND e.entry_type = 'payment_in'
-           AND LOWER(COALESCE(e.payment_mode, '')) = 'metal'
            AND e.fixed_asset_metal = false
            AND e.is_suspense = false
            AND e.metal_gm IS NOT NULL
            AND ABS(e.metal_gm) >= 0.0005
-           AND e.ledger_scope = $3
          ORDER BY e.entry_date DESC, e.id DESC
          LIMIT 200`,
         [resellerUserId, ledgerScope],
