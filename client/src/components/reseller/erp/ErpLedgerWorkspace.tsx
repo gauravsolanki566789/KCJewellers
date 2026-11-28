@@ -420,15 +420,17 @@ type MetalReceiptOption = {
   remaining_metal_gm: number
   received_metal_gm: number
   ledger_category?: string | null
+  customer_name?: string | null
 }
 
 function formatMetalReceiptLabel(r: MetalReceiptOption) {
   const ref = r.reference_no || `Entry #${r.id}`
+  const party = r.customer_name?.trim() || 'Customer'
   const d = r.entry_date ? String(r.entry_date).slice(0, 10) : ''
   const gross = r.gross_wt_gm != null ? Number(r.gross_wt_gm).toFixed(3) : '—'
   const pct = r.metal_pct != null ? String(r.metal_pct) : '—'
   const net = Number(r.remaining_metal_gm).toFixed(3)
-  return `${ref} · ${d} · ${gross}g gross @ ${pct}% → ${net}g net`
+  return `${ref} · ${party} · ${d} · ${gross}g gross @ ${pct}% → ${net}g net`
 }
 
 function emptyPaymentForm(metalLedger = false) {
@@ -918,7 +920,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
   )
 
   useEffect(() => {
-    if (form.currency !== 'metal' || form.metal_kind !== 'issued' || !form.customer_id) {
+    if (form.currency !== 'metal' || form.metal_kind !== 'issued') {
       setMetalReceipts([])
       return
     }
@@ -927,7 +929,6 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
     void axios
       .get<{ receipts: MetalReceiptOption[] }>('/api/reseller/erp/ledger/metal-receipts', {
         params: {
-          customer_id: form.customer_id,
           jewellery_metal: form.jewellery_metal,
           ledger_scope: laneMode ? 'lane' : 'official',
         },
@@ -944,7 +945,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
     return () => {
       cancelled = true
     }
-  }, [form.currency, form.metal_kind, form.customer_id, form.jewellery_metal, laneMode])
+  }, [form.currency, form.metal_kind, form.jewellery_metal, laneMode])
 
   useEffect(() => {
     if (!form.source_metal_entry_id || form.metal_kind !== 'issued') return
@@ -2535,7 +2536,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                     <select
                       className={`${erpInputCls} mt-1`}
                       value={form.source_metal_entry_id}
-                      disabled={!form.customer_id || metalReceiptsLoading}
+                      disabled={metalReceiptsLoading}
                       onChange={(e) => {
                         const source_metal_entry_id = e.target.value
                         if (!source_metal_entry_id) {
@@ -2565,13 +2566,11 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                       }}
                     >
                       <option value="">
-                        {!form.customer_id
-                          ? 'Select customer first…'
-                          : metalReceiptsLoading
-                            ? 'Loading received metal…'
-                            : metalReceipts.length
-                              ? 'Select received metal (latest first)…'
-                              : 'No received metal available for this customer'}
+                        {metalReceiptsLoading
+                          ? 'Loading shop metal receipts…'
+                          : metalReceipts.length
+                            ? 'Select received metal to issue (latest first)…'
+                            : 'No received metal available in the shop'}
                       </option>
                       {metalReceipts.map((r) => (
                         <option key={r.id} value={String(r.id)}>

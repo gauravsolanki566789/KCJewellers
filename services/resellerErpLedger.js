@@ -240,15 +240,15 @@ async function issuedNetGmAgainstReceipt(query, resellerUserId, receiptId, exclu
 }
 
 async function listAvailableMetalReceipts(query, resellerUserId, opts) {
-    const customerId = opts.customerId;
     const jewelleryMetal = normalizeJewelleryMetal(opts.jewelleryMetal);
     const ledgerScope = LEDGER_SCOPES.has(opts.ledgerScope) ? opts.ledgerScope : 'official';
-    if (!customerId) return [];
     const rows = await query(
         `SELECT e.id, e.entry_date, e.reference_no, e.metal_gm, e.gross_wt_gm, e.metal_pct,
-                e.jewellery_metal, e.ledger_category, e.created_at,
+                e.jewellery_metal, e.ledger_category, e.created_at, e.customer_id,
+                c.name AS customer_name,
                 COALESCE(iss.issued_gm, 0)::numeric AS issued_gm
          FROM reseller_erp_ledger_entries e
+         LEFT JOIN reseller_erp_customers c ON c.id = e.customer_id AND c.reseller_user_id = e.reseller_user_id
          LEFT JOIN (
              SELECT source_ledger_entry_id, SUM(ABS(metal_gm)) AS issued_gm
              FROM reseller_erp_ledger_entries
@@ -258,7 +258,6 @@ async function listAvailableMetalReceipts(query, resellerUserId, opts) {
              GROUP BY source_ledger_entry_id
          ) iss ON iss.source_ledger_entry_id = e.id
          WHERE e.reseller_user_id = $1
-           AND e.customer_id = $2
            AND e.entry_type = 'payment_in'
            AND LOWER(COALESCE(e.payment_mode, '')) = 'metal'
            AND e.fixed_asset_metal = false
@@ -268,7 +267,7 @@ async function listAvailableMetalReceipts(query, resellerUserId, opts) {
            AND e.ledger_scope = $3
          ORDER BY e.entry_date DESC, e.id DESC
          LIMIT 200`,
-        [resellerUserId, customerId, ledgerScope],
+        [resellerUserId, ledgerScope],
     );
     const out = [];
     for (const r of rows) {
@@ -295,6 +294,8 @@ async function listAvailableMetalReceipts(query, resellerUserId, opts) {
             fine_metal_gm: fineFromGross,
             jewellery_metal: jm,
             ledger_category: r.ledger_category || null,
+            customer_id: r.customer_id != null ? Number(r.customer_id) : null,
+            customer_name: trimStr(r.customer_name, 255) || null,
             created_at: r.created_at,
         });
     }
@@ -800,16 +801,11 @@ function registerResellerErpLedgerRoutes(app, deps) {
 
     app.get('/api/reseller/erp/ledger/metal-receipts', checkAuth, erpGate, async (req, res) => {
         try {
-            const customerId = parseInt(String(req.query.customer_id || ''), 10);
-            if (!Number.isFinite(customerId) || customerId <= 0) {
-                return res.status(400).json({ error: 'customer_id required' });
-            }
             const jewelleryMetal = normalizeJewelleryMetal(
                 req.query.jewellery_metal || req.query.jewelleryMetal || req.query.metal,
             );
             const ledgerScope = resolveRequestedLedgerScope(req, req.query.ledger_scope);
             const receipts = await listAvailableMetalReceipts(query, req.user.id, {
-                customerId,
                 jewelleryMetal,
                 ledgerScope,
             });
@@ -1144,7 +1140,6 @@ function registerResellerErpLedgerRoutes(app, deps) {
             }
             if (metalKind === 'issued' && !fixedAssetMetal && customerId) {
                 const receipts = await listAvailableMetalReceipts(query, req.user.id, {
-                    customerId,
                     jewelleryMetal,
                     ledgerScope,
                 });

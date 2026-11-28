@@ -178,14 +178,14 @@ function extractLinkedBillRefFromNarration(narration) {
     return null;
 }
 
-/** Oldest first — standard ledger order; running balance flows top to bottom. */
+/** Oldest first — by date, then actual posting time (created_at), then stable id. */
 function sortLedgerRowsChronologically(rows) {
     return [...rows].sort((a, b) => {
         const d = String(a.date || '').localeCompare(String(b.date || ''));
         if (d !== 0) return d;
-        const ra = rowKindRank(a.kind);
-        const rb = rowKindRank(b.kind);
-        if (ra !== rb) return ra - rb;
+        const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+        if (ta > 0 && tb > 0 && ta !== tb) return ta - tb;
         return (a.sort_id || 0) - (b.sort_id || 0);
     });
 }
@@ -363,6 +363,7 @@ function pushShadowSaleRows(rows, s) {
     rows.push({
         date: normDate(s.bill_date),
         sort_id: s.id,
+        created_at: s.created_at,
         kind: 'sale',
         ref: s.bill_number,
         description: `(V NO: ${s.bill_number})`,
@@ -632,7 +633,7 @@ async function buildCustomerAccount(query, resellerUserId, opts) {
     const entryParams = book ? [resellerUserId] : [resellerUserId, customerId, nameCompact];
     let entrySql = `SELECT id, entry_date, entry_type, amount_inr, payment_mode, reference_no,
                            narration, bill_id, shadow_bill_id, is_suspense, ledger_scope, weight_kg, metal_gm,
-                           metal_cleared_gm, virtual_metal_inr, jewellery_metal
+                           metal_cleared_gm, virtual_metal_inr, jewellery_metal, created_at
                     FROM reseller_erp_ledger_entries
                     WHERE reseller_user_id = $1 AND is_suspense = false`;
     if (book === 'cash') {
@@ -729,6 +730,7 @@ async function buildCustomerAccount(query, resellerUserId, opts) {
         rows.push({
             date: normDate(s.bill_date),
             sort_id: s.id,
+            created_at: s.created_at,
             bill_id: s.id,
             kind,
             ref: s.bill_number,
@@ -825,6 +827,7 @@ async function buildCustomerAccount(query, resellerUserId, opts) {
         rows.push({
             date: normDate(p.entry_date),
             sort_id: p.id,
+            created_at: p.created_at,
             ledger_entry_id: p.id,
             kind: p.entry_type,
             ref: compactLedgerRef(p.reference_no) || '',

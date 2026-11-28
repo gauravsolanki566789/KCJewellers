@@ -29,6 +29,7 @@ import {
 } from '@/lib/erp-tax-invoice-template'
 import {
   exactLineMcInr,
+  exactLineWeightGm,
   isMetalBillSession,
   JOB_WORK_CGST_PCT,
   JOB_WORK_IGST_PCT,
@@ -817,18 +818,23 @@ function InvoicePage({
       ? { subtotal: taxable, net: displayNetForAlloc }
       : undefined
 
-  const unifiedRows: string[][] = lines.map((line, idx) => {
+  const unifiedRows: string[][] = metalBill
+    ? (() => {
+        const totalWt = Math.round(
+          lines.reduce((sum, line) => sum + exactLineWeightGm(line, metalSlab), 0) * 1000,
+        ) / 1000
+        const amtText = taxable > 0 ? taxable.toFixed(2) : '—'
+        const wtText = totalWt > 0 ? totalWt.toFixed(3) : ''
+        const slNo = '1.'
+        const desc = jobWork.name
+        const hsn = jobWork.hsn
+        if (!showPurityInPdf) {
+          return [[slNo, desc, hsn, '', '', wtText, '', amtText]]
+        }
+        return [[slNo, desc, hsn, '', '', wtText, '', '', amtText]]
+      })()
+    : lines.map((line, idx) => {
     const slNo = `${idx + 1}.`
-    if (metalBill) {
-      const mcAmt = exactLineMcInr(line, metalSlab)
-      const amtText = mcAmt > 0 ? mcAmt.toFixed(2) : '—'
-      const desc = jobWork.name
-      const hsn = jobWork.hsn
-      if (!showPurityInPdf) {
-        return [slNo, desc, hsn, '', '', '', '', amtText]
-      }
-      return [slNo, desc, hsn, '', '', '', '', '', amtText]
-    }
     const desc = line.invoice_item_name || line.name || 'JEWELLERY'
     const hsn = line.hsn_code || '711311'
     const qty = lineQty(line)

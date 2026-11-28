@@ -11,6 +11,7 @@ import { formatPdfAddressLines } from '@/lib/erp-customer-address-format'
 import { billLinePdfPurityText } from '@/lib/erp-pdf-purity'
 import {
   exactLineMcInr,
+  exactLineWeightGm,
   isMetalBillSession,
   JOB_WORK_CGST_PCT,
   JOB_WORK_SGST_PCT,
@@ -396,8 +397,48 @@ function InvoiceCopyPage({
             </View>
           ))}
         </View>
-        {lines.map((line, i) => {
-          const taxable = metalBill ? exactLineMcInr(line, metalSlab) : lineTaxable(line, totals, lines.length)
+        {(metalBill
+          ? [
+              {
+                key: 'job-work',
+                idx: 0,
+                taxable: metalMc,
+                name: jobWork.name,
+                hsn: jobWork.hsn,
+                netGm: Math.round(lines.reduce((s, l) => s + exactLineWeightGm(l, metalSlab), 0) * 1000) / 1000,
+              },
+            ]
+          : lines.map((line, i) => ({
+              key: `line-${i}`,
+              idx: i,
+              line,
+              taxable: lineTaxable(line, totals, lines.length),
+            }))
+        ).map((row) => {
+          if (metalBill && 'netGm' in row) {
+            const wt = row.netGm > 0 ? row.netGm.toFixed(3) : '—'
+            return (
+              <View key={row.key} style={styles.tableRow}>
+                <Text style={[styles.tableCell, { width: colW.sl }]}>1</Text>
+                <Text style={[styles.tableCell, styles.tableCellLeft, { width: colW.item }]}>
+                  {sanitizePdfText(row.name)}
+                </Text>
+                <Text style={[styles.tableCell, { width: colW.hsn }]}>{sanitizePdfText(row.hsn)}</Text>
+                <Text style={[styles.tableCell, { width: colW.pcs }]} />
+                <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.wt }]}>{wt}</Text>
+                {showPurityInPdf ? (
+                  <Text style={[styles.tableCell, { width: COL_WIDTHS.purity }]} />
+                ) : null}
+                <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.rate }]} />
+                <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.total, borderRightWidth: 0 }]}>
+                  {row.taxable.toFixed(2)}
+                </Text>
+              </View>
+            )
+          }
+          const line = (row as { line: ErpBillLine }).line
+          const i = row.idx
+          const taxable = row.taxable
           const mrp = isMrpInvoiceLine(line, mrpItemNames)
           const netGm = Number(line.originalWeightGm ?? line.weightGm) || 0
           const qty = Math.max(1, Number(line.qty) || 1)
@@ -409,25 +450,23 @@ function InvoiceCopyPage({
                 ? Number(line.ratePerGram)
                 : null
           return (
-            <View key={`line-${i}`} style={styles.tableRow}>
+            <View key={row.key} style={styles.tableRow}>
               <Text style={[styles.tableCell, { width: colW.sl }]}>{i + 1}</Text>
               <Text style={[styles.tableCell, styles.tableCellLeft, { width: colW.item }]}>
-                {sanitizePdfText(metalBill ? jobWork.name : lineItemName(line))}
+                {sanitizePdfText(lineItemName(line))}
               </Text>
-              <Text style={[styles.tableCell, { width: colW.hsn }]}>
-                {sanitizePdfText(metalBill ? jobWork.hsn : lineHsn(line))}
-              </Text>
-              <Text style={[styles.tableCell, { width: colW.pcs }]}>{metalBill ? '' : mrp ? qty : '—'}</Text>
+              <Text style={[styles.tableCell, { width: colW.hsn }]}>{sanitizePdfText(lineHsn(line))}</Text>
+              <Text style={[styles.tableCell, { width: colW.pcs }]}>{mrp ? qty : '—'}</Text>
               <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.wt }]}>
-                {metalBill ? '' : !mrp && netGm > 0 ? netGm.toFixed(3) : '—'}
+                {!mrp && netGm > 0 ? netGm.toFixed(3) : '—'}
               </Text>
               {showPurityInPdf ? (
                 <Text style={[styles.tableCell, { width: COL_WIDTHS.purity }]}>
-                  {metalBill || mrp ? '' : billLinePdfPurityText(line, lines)}
+                  {mrp ? '' : billLinePdfPurityText(line, lines)}
                 </Text>
               ) : null}
               <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.rate }]}>
-                {metalBill ? '' : rate != null && Number.isFinite(rate) ? rate.toFixed(2) : '—'}
+                {rate != null && Number.isFinite(rate) ? rate.toFixed(2) : '—'}
               </Text>
               <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.total, borderRightWidth: 0 }]}>
                 {taxable.toFixed(2)}
