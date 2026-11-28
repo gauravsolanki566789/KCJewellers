@@ -1250,12 +1250,12 @@ var KcExhibitionBillingModule = (() => {
     const skipTierDisc = effectiveMcPerUnit != null && Number(effectiveMcPerUnit) > 0;
     if (mcGm) {
       metalPart = Math.round(metalRate * billWt * qty);
-      mc = Math.round(mcRate * mcWt * qty);
-      if (!skipTierDisc && mcDisc > 0) mc = Math.round(mc * (1 - mcDisc / 100));
+      mc = Math.round(mcRate * mcWt * qty * 100) / 100;
+      if (!skipTierDisc && mcDisc > 0) mc = Math.round(mc * (1 - mcDisc / 100) * 100) / 100;
     } else {
       metalPart = Math.round(metalRate * billWt * qty);
-      const mcRaw = Math.round(mcRate * qty);
-      mc = !skipTierDisc && mcDisc > 0 ? Math.round(mcRaw * (1 - mcDisc / 100)) : mcRaw;
+      const mcRaw = Math.round(mcRate * qty * 100) / 100;
+      mc = !skipTierDisc && mcDisc > 0 ? Math.round(mcRaw * (1 - mcDisc / 100) * 100) / 100 : mcRaw;
     }
     const taxable = metalPart + mc + stone2 + box;
     const total = Math.round(taxable * (1 + gstPct / 100));
@@ -1715,7 +1715,7 @@ var KcExhibitionBillingModule = (() => {
     const mcPerG = erpEffectiveMcPerUnit(line, slab, slabSettings) || mcBase;
     const mcDisc = mcBase > mcPerG && mcBase > 0 ? Math.round((1 - mcPerG / mcBase) * 100) : 0;
     const metalPart = Math.round(metalRate * billWt * qty);
-    const mc = Math.round(mcPerG * billWt * qty);
+    const mc = Math.round(mcPerG * billWt * qty * 100) / 100;
     const taxable = metalPart + mc;
     const totalWithGst = Math.round(taxable * (1 + gstPct / 100));
     const gstAmt = totalWithGst - taxable;

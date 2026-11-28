@@ -7,7 +7,7 @@ import axios from '@/lib/axios'
 import { useAuth } from '@/hooks/useAuth'
 import { useErpOperator } from '@/context/ErpOperatorContext'
 import { useErpSlabSettings } from '@/hooks/useErpSlabSettings'
-import { billingSlabOptions, slabLabel } from '@/lib/erp-slab-settings'
+import { billingSlabOptions, isSlabRelatedFieldKey, slabLabel, slabRelatedFieldLabel } from '@/lib/erp-slab-settings'
 import { overlayCustomerSlabsOnLine, type CustomerSlabRow } from '@/lib/erp-customer-slab'
 import { type WholesaleUserFields } from '@/lib/customer-tier'
 import {
@@ -134,6 +134,12 @@ import {
   visibleCollapsedBillTableCols,
 } from '@/lib/erp-billing-table-cols'
 import { sumJainavMcOwedInr, sumJainavMetalOwedGm } from '@/lib/erp-jainav-settlement'
+import { useJewelleryLedgerMetalEnabled } from '@/hooks/useJewelleryLedgerMetalEnabled'
+import {
+  computeMetalBillSummary,
+  findJobWorkInvoiceItem,
+  type ErpBillKind,
+} from '@/lib/erp-metal-bill'
 import {
   billingShowsMcSlabRColumn,
   erpLineNetWeightGm,
@@ -409,6 +415,7 @@ export function ErpBillingWorkspace() {
     [auth.user],
   )
   const { settings: shopSlabSettings } = useErpSlabSettings()
+  const { enabled: metalLedgerOn } = useJewelleryLedgerMetalEnabled()
   const slabSelectOptions = useMemo(() => billingSlabOptions(shopSlabSettings), [shopSlabSettings])
   const [customerSlabs, setCustomerSlabs] = useState<CustomerSlabRow[]>([])
 
@@ -551,8 +558,12 @@ export function ErpBillingWorkspace() {
     () =>
       TABLE_COLS.filter(
         (c) => c.key !== 'mc_rate_slab_r' || billingShowsMcSlabRColumn(rateSlab),
+      ).map((c) =>
+        isSlabRelatedFieldKey(c.key)
+          ? { ...c, label: slabRelatedFieldLabel(c.key, shopSlabSettings.labels) }
+          : c,
       ),
-    [rateSlab],
+    [rateSlab, shopSlabSettings.labels],
   )
 
   useEffect(() => {
@@ -2160,9 +2171,23 @@ export function ErpBillingWorkspace() {
   const buildPayload = (
     billType: 'sale' | 'estimate',
     status: string,
-    extra?: { bill_number?: string; placeOfSupply?: string; customerId?: number | null },
+    extra?: {
+      bill_number?: string
+      placeOfSupply?: string
+      customerId?: number | null
+      billKind?: ErpBillKind
+    },
   ) => {
-    const billTotalInr = resolveBillTotal(billType)
+    const metalBill = billType === 'sale' && extra?.billKind === 'metal' && metalLedgerOn
+    const jobWork = findJobWorkInvoiceItem(gstInvoiceItems)
+    const metalSummary = metalBill
+      ? computeMetalBillSummary({
+          lines,
+          slab: rateSlab,
+          gstOn: effectiveGstEnabled,
+        })
+      : null
+    const billTotalInr = metalSummary ? metalSummary.roundedTotal : resolveBillTotal(billType)
     const linkedCustomerId = extra?.customerId !== undefined ? extra.customerId : customerId
     return {
     bill_type: billType,
@@ -2200,18 +2225,40 @@ export function ErpBillingWorkspace() {
         mcDiscountInr: discountSummary.mcDiscountInr,
         cashDiscountInr: parsedExplicitCashDiscount,
         totalDiscountInr: discountSummary.totalDiscountInr,
-        netTotalInr: totals.net,
+        netTotalInr: metalSummary ? metalSummary.roundedTotal : totals.net,
         goldSlabRShowMc,
         gstEnabled: effectiveGstEnabled,
         operatorDisplayName: operator?.displayName || operator?.username || '',
         estimateNarration: estimateNarration.trim() || null,
         ...(billType === 'sale' && !isOfficialGstBill
           ? {
-              jainavMetalOwedGm: jainavMetalOwedGm > 0 ? jainavMetalOwedGm : undefined,
-              jainavMcOwedInr: jainavMcOwedInr > 0 ? jainavMcOwedInr : undefined,
+              jainavMetalOwedGm: metalSummary
+                ? metalSummary.weightGm
+                : jainavMetalOwedGm > 0
+                  ? jainavMetalOwedGm
+                  : undefined,
+              jainavMcOwedInr: metalSummary
+                ? metalSummary.roundedTotal
+                : jainavMcOwedInr > 0
+                  ? jainavMcOwedInr
+                  : undefined,
             }
           : {}),
       }),
+      ...(metalBill && metalSummary
+        ? {
+            metal_bill: true,
+            metal_ledger_mode: 'metal' as const,
+            metalLedgerWeightGm: metalSummary.weightGm,
+            metalBillMcInr: metalSummary.mcInr,
+            metalBillGstInr: metalSummary.gstInr,
+            metalBillNetInr: metalSummary.roundedTotal,
+            metalBillItemName: jobWork.name,
+            metalBillHsn: jobWork.hsn,
+            jainavMetalOwedGm: metalSummary.weightGm,
+            jainavMcOwedInr: metalSummary.roundedTotal,
+          }
+        : {}),
       ...(combinedSourceEstimateIds.length > 0
         ? {
             combinedFromEstimates: combinedEstimateNumbers,
@@ -2230,7 +2277,7 @@ export function ErpBillingWorkspace() {
   const persistBill = async (
     billType: 'sale' | 'estimate',
     status: string,
-    opts?: { skipReset?: boolean; bill_number?: string; placeOfSupply?: string },
+    opts?: { skipReset?: boolean; bill_number?: string; placeOfSupply?: string; billKind?: ErpBillKind },
   ): Promise<ErpBill | null> => {
     if (saveBusy || lines.length === 0) return null
     setSaveBusy(true)
@@ -2239,6 +2286,7 @@ export function ErpBillingWorkspace() {
       bill_number: opts?.bill_number,
       placeOfSupply: opts?.placeOfSupply,
       customerId: linkedCustomerId ?? customerId,
+      billKind: opts?.billKind,
     })
     try {
       let bill: ErpBill
@@ -2300,7 +2348,11 @@ export function ErpBillingWorkspace() {
     }
   }
 
-  const confirmSaveBill = async (opts: { billNumber: string; placeOfSupply: string }) => {
+  const confirmSaveBill = async (opts: {
+    billNumber: string
+    placeOfSupply: string
+    billKind?: ErpBillKind
+  }) => {
     if (ratesUnfixed) {
       setSaveConfirmOpen(false)
       alert('Rates are unfixed. Fix rates before saving a completed sales bill — use Generate quote for rate-unfix estimates.')
@@ -2312,6 +2364,7 @@ export function ErpBillingWorkspace() {
       skipReset: true,
       bill_number: opts.billNumber || undefined,
       placeOfSupply: opts.placeOfSupply || placeOfSupply,
+      billKind: metalLedgerOn && opts.billKind === 'metal' ? 'metal' : 'amount',
     })
     if (!bill) return
     const shadowBill = bill as ErpBill & { shadow?: boolean; lane?: 'hitesh' | 'jainav' }
@@ -2724,6 +2777,7 @@ export function ErpBillingWorkspace() {
         isOfficialGst={isOfficialGstBill}
         customerGst={customerGst}
         defaultPlaceOfSupply={placeOfSupply || defaultPlaceOfSupply}
+        metalLedgerOn={metalLedgerOn}
         onConfirm={(opts) => void confirmSaveBill(opts)}
       />
       <ErpLedgerBillSavedDialog

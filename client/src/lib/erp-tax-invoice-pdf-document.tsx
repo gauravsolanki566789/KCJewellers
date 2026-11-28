@@ -9,6 +9,14 @@ import { buildSettlementAdjustedInvoiceLines } from '@/lib/erp-invoice-settlemen
 import { formatErpDateDdMmYyyy } from '@/lib/erp-date-format'
 import { formatPdfAddressLines } from '@/lib/erp-customer-address-format'
 import { billLinePdfPurityText } from '@/lib/erp-pdf-purity'
+import {
+  exactLineMcInr,
+  isMetalBillSession,
+  JOB_WORK_CGST_PCT,
+  JOB_WORK_SGST_PCT,
+  metalBillJobWorkFromSession,
+} from '@/lib/erp-metal-bill'
+import type { ErpRateSlab } from '@/lib/erp-billing-pricing'
 
 export type ErpGstSettings = {
   gstin?: string | null
@@ -278,11 +286,21 @@ function InvoiceCopyPage({
   showPurityInPdf = false,
 }: ErpTaxInvoicePdfDocumentProps & { lines: ErpBillLine[] }) {
   const colW = showPurityInPdf ? COL_WIDTHS : COL_WIDTHS_NO_PURITY
-  const gstValue = totals.subtotal
-  const cgst = totals.gst / 2
-  const sgst = totals.gst / 2
+  const session = (bill.session || {}) as Record<string, unknown>
+  const metalBill = isMetalBillSession(session)
+  const jobWork = metalBillJobWorkFromSession(session)
+  const metalSlab = (String(session.rateSlab || 'R') as ErpRateSlab) || 'R'
+  const metalMc =
+    Number(session.metalBillMcInr) ||
+    lines.reduce((sum, line) => sum + exactLineMcInr(line, metalSlab), 0)
+  const metalGst = Number(session.metalBillGstInr) || (metalBill ? Math.round(metalMc * 0.05 * 100) / 100 : 0)
+  const metalNet =
+    Number(session.metalBillNetInr) || Math.round(metalMc + metalGst)
+  const gstValue = metalBill ? metalMc : totals.subtotal
+  const cgst = metalBill ? metalGst / 2 : totals.gst / 2
+  const sgst = metalBill ? metalGst / 2 : totals.gst / 2
   const rawTotal = gstValue + cgst + sgst
-  const roundedTotal = Math.round(rawTotal)
+  const roundedTotal = metalBill ? metalNet : Math.round(rawTotal)
   const roundOff = Math.round((roundedTotal - rawTotal) * 100) / 100
   const totalPcs = lines.reduce((s, l) => {
     if (isShippingChargeLine(l)) return s
@@ -359,7 +377,7 @@ function InvoiceCopyPage({
           {[
             { w: colW.sl, label: 'Sl' },
             { w: colW.item, label: 'ITEM' },
-            { w: colW.hsn, label: 'HSN' },
+            { w: colW.hsn, label: metalBill ? 'HSN/SAC' : 'HSN' },
             { w: colW.pcs, label: 'PCS' },
             { w: colW.wt, label: 'Weight\nIn Gms' },
             ...(showPurityInPdf ? [{ w: COL_WIDTHS.purity, label: 'Purity' }] : []),
@@ -379,7 +397,7 @@ function InvoiceCopyPage({
           ))}
         </View>
         {lines.map((line, i) => {
-          const taxable = lineTaxable(line, totals, lines.length)
+          const taxable = metalBill ? exactLineMcInr(line, metalSlab) : lineTaxable(line, totals, lines.length)
           const mrp = isMrpInvoiceLine(line, mrpItemNames)
           const netGm = Number(line.originalWeightGm ?? line.weightGm) || 0
           const qty = Math.max(1, Number(line.qty) || 1)
@@ -394,20 +412,22 @@ function InvoiceCopyPage({
             <View key={`line-${i}`} style={styles.tableRow}>
               <Text style={[styles.tableCell, { width: colW.sl }]}>{i + 1}</Text>
               <Text style={[styles.tableCell, styles.tableCellLeft, { width: colW.item }]}>
-                {sanitizePdfText(lineItemName(line))}
+                {sanitizePdfText(metalBill ? jobWork.name : lineItemName(line))}
               </Text>
-              <Text style={[styles.tableCell, { width: colW.hsn }]}>{sanitizePdfText(lineHsn(line))}</Text>
-              <Text style={[styles.tableCell, { width: colW.pcs }]}>{mrp ? qty : '—'}</Text>
+              <Text style={[styles.tableCell, { width: colW.hsn }]}>
+                {sanitizePdfText(metalBill ? jobWork.hsn : lineHsn(line))}
+              </Text>
+              <Text style={[styles.tableCell, { width: colW.pcs }]}>{metalBill ? '' : mrp ? qty : '—'}</Text>
               <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.wt }]}>
-                {!mrp && netGm > 0 ? netGm.toFixed(3) : '—'}
+                {metalBill ? '' : !mrp && netGm > 0 ? netGm.toFixed(3) : '—'}
               </Text>
               {showPurityInPdf ? (
                 <Text style={[styles.tableCell, { width: COL_WIDTHS.purity }]}>
-                  {mrp ? '' : billLinePdfPurityText(line, lines)}
+                  {metalBill || mrp ? '' : billLinePdfPurityText(line, lines)}
                 </Text>
               ) : null}
               <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.rate }]}>
-                {rate != null && Number.isFinite(rate) ? rate.toFixed(2) : '—'}
+                {metalBill ? '' : rate != null && Number.isFinite(rate) ? rate.toFixed(2) : '—'}
               </Text>
               <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.total, borderRightWidth: 0 }]}>
                 {taxable.toFixed(2)}
@@ -421,9 +441,9 @@ function InvoiceCopyPage({
             Total
           </Text>
           <Text style={[styles.tableCell, { width: colW.hsn }]} />
-          <Text style={[styles.tableCell, { width: colW.pcs, fontWeight: 'bold' }]}>{totalPcs}</Text>
+          <Text style={[styles.tableCell, { width: colW.pcs, fontWeight: 'bold' }]}>{metalBill ? '' : totalPcs}</Text>
           <Text style={[styles.tableCell, styles.tableCellRight, { width: colW.wt, fontWeight: 'bold' }]}>
-            {totalWeight.toFixed(3)}
+            {metalBill ? '' : totalWeight.toFixed(3)}
           </Text>
           {showPurityInPdf ? (
             <Text style={[styles.tableCell, { width: COL_WIDTHS.purity, borderRightWidth: 0 }]} />
@@ -445,11 +465,11 @@ function InvoiceCopyPage({
           <Text>{gstValue.toFixed(2)}</Text>
         </View>
         <View style={styles.totalRow}>
-          <Text>CGST@1.50%:</Text>
+          <Text>{metalBill ? `CGST@${JOB_WORK_CGST_PCT.toFixed(2)}%:` : 'CGST@1.50%:'}</Text>
           <Text>{cgst.toFixed(2)}</Text>
         </View>
         <View style={styles.totalRow}>
-          <Text>SGST@1.50%:</Text>
+          <Text>{metalBill ? `SGST@${JOB_WORK_SGST_PCT.toFixed(2)}%:` : 'SGST@1.50%:'}</Text>
           <Text>{sgst.toFixed(2)}</Text>
         </View>
         <View style={styles.totalGrand}>

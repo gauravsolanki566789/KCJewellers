@@ -168,11 +168,6 @@ export function ErpEstimateNarrationsWorkspace() {
 
   return (
     <div className="space-y-4">
-      <p className="mb-4 text-sm text-[var(--color-jewelry-black,#1a1814)]/65">
-        Estimate options appear in Scan &amp; bill. Approval issue narrations are chosen when converting an estimate
-        to a Delivery Challan [Issue] — that text prints on the challan PDF.
-      </p>
-
       <div className={`${erpCardCls} mb-4 space-y-3`}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -192,11 +187,7 @@ export function ErpEstimateNarrationsWorkspace() {
             >
               {toggleBusy ? <Loader2 className="size-4 animate-spin" /> : enabled ? 'Turn off' : 'Turn on'}
             </button>
-          ) : (
-            <p className="text-xs text-[var(--color-jewelry-black,#1a1814)]/45">
-              Unlock Jainav mode to turn this off.
-            </p>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -293,9 +284,6 @@ export function ErpEstimateNarrationsWorkspace() {
       <div className={`${erpCardCls} space-y-4`}>
         <p className="text-sm font-semibold text-[var(--color-jewelry-black,#1a1814)]">
           Approval issue narrations
-        </p>
-        <p className="text-xs leading-relaxed text-[var(--color-jewelry-black,#1a1814)]/55">
-          Shown when issuing an estimate as approval. Printed in bold on the Delivery Challan [Issue] PDF.
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <label className="min-w-0 flex-1 text-xs text-[var(--color-jewelry-black,#1a1814)]/55">

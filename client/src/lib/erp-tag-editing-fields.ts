@@ -14,6 +14,7 @@ export type TagEditFieldKey =
   | 'wastage_pct'
   | 'mc_rate'
   | 'mc_rate_slab_r'
+  | 'mc_rate_slab_r1'
   | 'mc_rate_slab_w'
   | 'mc_rate_slab_f'
   | 'metal_slab_r_pct'
@@ -58,6 +59,7 @@ export const TAG_EDIT_FIELD_DEFS: TagEditFieldDef[] = [
   { key: 'wastage_pct', label: 'Wast %', kind: 'number' },
   { key: 'mc_rate', label: 'MC', kind: 'number' },
   { key: 'mc_rate_slab_r', label: 'MC R', kind: 'number' },
+  { key: 'mc_rate_slab_r1', label: 'MC R1', kind: 'number' },
   { key: 'mc_rate_slab_w', label: 'MC W', kind: 'number' },
   { key: 'mc_rate_slab_f', label: 'MC F', kind: 'number' },
   { key: 'metal_slab_r_pct', label: 'Met R%', kind: 'number' },

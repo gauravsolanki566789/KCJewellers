@@ -8,6 +8,8 @@ import {
 } from '@/lib/erp-stock-excel-builder'
 import { erpBtnGhost, erpBtnPrimary, erpCardCls, erpInputCls } from '@/components/reseller/erp/erp-ui'
 import { FileSpreadsheet, ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react'
+import { useErpSlabSettings } from '@/hooks/useErpSlabSettings'
+import { isSlabRelatedFieldKey, slabRelatedFieldLabel } from '@/lib/erp-slab-settings'
 
 const FIELD_ROWS: { key: keyof StockExcelBuilderDefaults; label: string; placeholder?: string }[] = [
   { key: 'style_code', label: 'Style', placeholder: 'IMPORTED' },
@@ -70,6 +72,7 @@ type Props = {
 }
 
 export function ErpStockExcelBuilder({ existingSkus = [], existingStyles = [], existingProducts = [] }: Props) {
+  const { settings: shopSlabSettings } = useErpSlabSettings()
   const [open, setOpen] = useState(false)
   const [blocks, setBlocks] = useState<BlockState[]>(() => [newBlock('b1')])
 
@@ -248,7 +251,14 @@ export function ErpStockExcelBuilder({ existingSkus = [], existingStyles = [], e
                 ) : null}
               </div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {FIELD_ROWS.map(({ key, label, placeholder }) => renderField(block, key, label, placeholder))}
+                {FIELD_ROWS.map(({ key, label, placeholder }) =>
+                  renderField(
+                    block,
+                    key,
+                    isSlabRelatedFieldKey(key) ? slabRelatedFieldLabel(key, shopSlabSettings.labels) : label,
+                    placeholder,
+                  ),
+                )}
                 <label className="block text-[10px] font-semibold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">
                   How many rows?
                   <input

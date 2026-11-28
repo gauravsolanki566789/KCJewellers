@@ -21,10 +21,13 @@ import {
 } from '@/lib/erp-tag-editing-fields'
 import { printStockLabels } from '@/lib/erp-print-labels'
 import { useErpWorkstationSelection } from '@/components/reseller/erp/ErpWorkstationBar'
+import { useErpSlabSettings } from '@/hooks/useErpSlabSettings'
+import { isSlabRelatedFieldKey, slabRelatedFieldLabel } from '@/lib/erp-slab-settings'
 
 type Toast = { tone: 'ok' | 'err'; message: string }
 
 export function ErpTagEditingWorkspace() {
+  const { settings: shopSlabSettings } = useErpSlabSettings()
   const scanRef = useRef<HTMLInputElement>(null)
   const [scan, setScan] = useState('')
   const [piece, setPiece] = useState<ErpStockPiece | null>(null)
@@ -221,7 +224,9 @@ export function ErpTagEditingWorkspace() {
                 key={field.key}
                 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-jewelry-black,#1a1814)]/70"
               >
-                {field.label}
+                {isSlabRelatedFieldKey(field.key)
+                  ? slabRelatedFieldLabel(field.key, shopSlabSettings.labels)
+                  : field.label}
                 {field.kind === 'status' ? (
                   <select
                     className={`${erpInputCls} mt-1`}

@@ -27,6 +27,15 @@ import {
   normalizeTaxInvoiceTemplate,
   type ErpTaxInvoiceTemplateConfig,
 } from '@/lib/erp-tax-invoice-template'
+import {
+  exactLineMcInr,
+  isMetalBillSession,
+  JOB_WORK_CGST_PCT,
+  JOB_WORK_IGST_PCT,
+  JOB_WORK_SGST_PCT,
+  metalBillJobWorkFromSession,
+} from '@/lib/erp-metal-bill'
+import type { ErpRateSlab } from '@/lib/erp-billing-pricing'
 
 export type { ErpTaxInvoicePdfDocumentProps }
 
@@ -743,6 +752,9 @@ function InvoicePage({
       typeof bill.session === 'object' &&
       (bill.session as { gstEnabled?: boolean }).gstEnabled === false)
   const isApproval = variant === 'approval'
+  const metalBill = !isApproval && isMetalBillSession(session)
+  const jobWork = metalBillJobWorkFromSession(session)
+  const metalSlab = (String(session.rateSlab || 'R') as ErpRateSlab) || 'R'
   const lineAmountOpts = { gstOffOnBill: !!gstOffOnBill, isApproval, mrpItemNames }
   const targetNetInr = Math.round(Number(bill.total_inr) || totals.net || 0)
   let taxable = 0
@@ -751,7 +763,19 @@ function InvoicePage({
   let roundedTotal = targetNetInr
   let roundOff = 0
 
-  if (gstOffOnBill && totals.net > 0) {
+  if (metalBill) {
+    taxable = roundInr2(
+      Number(session.metalBillMcInr) ||
+        lines.reduce((sum, line) => sum + exactLineMcInr(line, metalSlab), 0),
+    )
+    gstAmt = gstOffOnBill ? 0 : roundInr2(Number(session.metalBillGstInr) || taxable * 0.05)
+    rawTotal = roundInr2(taxable + gstAmt)
+    roundedTotal =
+      Number(session.metalBillNetInr) > 0
+        ? Math.round(Number(session.metalBillNetInr))
+        : Math.round(targetNetInr || rawTotal)
+    roundOff = roundInr2(roundedTotal - rawTotal)
+  } else if (gstOffOnBill && totals.net > 0) {
     const net = Math.round(totals.net)
     taxable = roundInr2(net / 1.03)
     gstAmt = roundInr2(net - taxable)
@@ -795,6 +819,16 @@ function InvoicePage({
 
   const unifiedRows: string[][] = lines.map((line, idx) => {
     const slNo = `${idx + 1}.`
+    if (metalBill) {
+      const mcAmt = exactLineMcInr(line, metalSlab)
+      const amtText = mcAmt > 0 ? mcAmt.toFixed(2) : '—'
+      const desc = jobWork.name
+      const hsn = jobWork.hsn
+      if (!showPurityInPdf) {
+        return [slNo, desc, hsn, '', '', '', '', amtText]
+      }
+      return [slNo, desc, hsn, '', '', '', '', '', amtText]
+    }
     const desc = line.invoice_item_name || line.name || 'JEWELLERY'
     const hsn = line.hsn_code || '711311'
     const qty = lineQty(line)
@@ -866,32 +900,38 @@ function InvoicePage({
     String(customerShippingAddress || '').trim().length > 0
   const totalQty = lines.reduce((sum, line) => sum + lineQty(line), 0)
   const totalNetWt = roundInr2(lines.reduce((sum, line) => sum + lineTotalNetGm(line), 0))
-  const unifiedCols = showPurityInPdf ? [...UNIFIED_COLS_WITH_PURITY] : [...UNIFIED_COLS]
+  const unifiedCols = (showPurityInPdf ? [...UNIFIED_COLS_WITH_PURITY] : [...UNIFIED_COLS]).map((h) =>
+    metalBill && String(h).replace(/\s+/g, ' ').includes('HSN') ? 'HSN/SAC' : h,
+  )
   const unifiedWidths = showPurityInPdf ? [...UNIFIED_COL_W_WITH_PURITY] : [...UNIFIED_COL_W]
   const tableFooterCells =
     !isApproval && unifiedRows.length > 0
-      ? showPurityInPdf
-        ? [
-            '',
-            'Total',
-            '',
-            String(totalQty),
-            '',
-            totalNetWt > 0 ? totalNetWt.toFixed(3) : '—',
-            '',
-            '',
-            taxable > 0 ? taxable.toFixed(2) : '—',
-          ]
-        : [
-            '',
-            'Total',
-            '',
-            String(totalQty),
-            '',
-            totalNetWt > 0 ? totalNetWt.toFixed(3) : '—',
-            '',
-            taxable > 0 ? taxable.toFixed(2) : '—',
-          ]
+      ? metalBill
+        ? showPurityInPdf
+          ? ['', 'Total', '', '', '', '', '', '', taxable > 0 ? taxable.toFixed(2) : '—']
+          : ['', 'Total', '', '', '', '', '', taxable > 0 ? taxable.toFixed(2) : '—']
+        : showPurityInPdf
+          ? [
+              '',
+              'Total',
+              '',
+              String(totalQty),
+              '',
+              totalNetWt > 0 ? totalNetWt.toFixed(3) : '—',
+              '',
+              '',
+              taxable > 0 ? taxable.toFixed(2) : '—',
+            ]
+          : [
+              '',
+              'Total',
+              '',
+              String(totalQty),
+              '',
+              totalNetWt > 0 ? totalNetWt.toFixed(3) : '—',
+              '',
+              taxable > 0 ? taxable.toFixed(2) : '—',
+            ]
       : undefined
 
   return (
@@ -1057,17 +1097,17 @@ function InvoicePage({
           </View>
           {interstate ? (
             <View style={styles.totalCell}>
-              <Text>{template.totalsLabels.igst}</Text>
+              <Text>{metalBill ? `IGST ${JOB_WORK_IGST_PCT.toFixed(2)}%` : template.totalsLabels.igst}</Text>
               <Text>{igst.toFixed(2)}</Text>
             </View>
           ) : (
             <>
               <View style={styles.totalCell}>
-                <Text>{template.totalsLabels.cgst}</Text>
+                <Text>{metalBill ? `CGST ${JOB_WORK_CGST_PCT.toFixed(2)}%` : template.totalsLabels.cgst}</Text>
                 <Text>{cgst.toFixed(2)}</Text>
               </View>
               <View style={styles.totalCell}>
-                <Text>{template.totalsLabels.sgst}</Text>
+                <Text>{metalBill ? `SGST ${JOB_WORK_SGST_PCT.toFixed(2)}%` : template.totalsLabels.sgst}</Text>
                 <Text>{sgst.toFixed(2)}</Text>
               </View>
               <View style={styles.totalCellEmpty} />

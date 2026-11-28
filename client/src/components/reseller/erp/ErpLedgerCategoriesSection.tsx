@@ -93,9 +93,6 @@ export function ErpLedgerCategoriesSection({
     <div className={`${erpCardCls} space-y-4`}>
       <div>
         <p className="text-sm font-semibold text-[var(--color-jewelry-black,#1a1814)]">Ledger categories</p>
-        <p className="mt-0.5 text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
-          Used on Add payment and Purchase (PV) when Ledger in metal is on. Delete only in Jainav mode.
-        </p>
       </div>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <label className="min-w-0 flex-1 text-xs text-[var(--color-jewelry-black,#1a1814)]/55">

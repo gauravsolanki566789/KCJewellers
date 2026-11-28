@@ -709,15 +709,21 @@ async function buildCustomerAccount(query, resellerUserId, opts) {
         if (kind === 'debit') description = `(V NO: ${s.bill_number}) DEBIT NOTE -`;
         const ledgerScope = String((session && session.ledgerScope) || 'official').toLowerCase();
         const lane = ledgerScope === 'lane' ? 'jainav' : 'gst';
+        const metalBill = isOfficialMetalBillSession(session);
+        const metalBillLedger = metalBill
+            ? officialMetalBillLedger(session, s.lines_json, s.total_inr)
+            : null;
         const convertedGm =
-            session && session.metalLedgerConverted === true
+            !metalBill && session && session.metalLedgerConverted === true
                 ? roundMetalGm(Number(session.metalLedgerWeightGm) || 0)
                 : 0;
         const rateNote =
             session && session.metalLedgerRatePerG
                 ? ` @ ₹${Number(session.metalLedgerRatePerG)}/g`
                 : '';
-        if (convertedGm > 0) {
+        if (metalBillLedger && metalBillLedger.weightGm > 0) {
+            description += ` (metal ${metalBillLedger.weightGm.toFixed(3)} g + MC)`;
+        } else if (convertedGm > 0) {
             description += ` (metal ${convertedGm.toFixed(3)} g${rateNote})`;
         }
         rows.push({
@@ -727,18 +733,44 @@ async function buildCustomerAccount(query, resellerUserId, opts) {
             kind,
             ref: s.bill_number,
             description,
-            debit: isCredit || convertedGm > 0 ? 0 : amt,
-            credit: isCredit && convertedGm <= 0 ? amt : 0,
+            debit: isCredit
+                ? 0
+                : metalBillLedger
+                  ? metalBillLedger.amountInr
+                  : convertedGm > 0
+                    ? 0
+                    : amt,
+            credit: isCredit
+                ? metalBillLedger
+                    ? metalBillLedger.amountInr
+                    : convertedGm > 0
+                      ? 0
+                      : amt
+                : 0,
             lane,
-            rupee_only_debit: convertedGm > 0 ? false : lane === 'gst',
-            weight_gm:
-                convertedGm > 0
-                    ? convertedGm
-                    : weightGm > 0
-                      ? Math.round(weightGm * 1000) / 1000
-                      : 0,
-            debit_metal_gm: convertedGm > 0 && !isCredit ? convertedGm : 0,
-            credit_metal_gm: convertedGm > 0 && isCredit ? convertedGm : 0,
+            rupee_only_debit: metalBillLedger || convertedGm > 0 ? false : lane === 'gst',
+            metal_ledger_mode: !!metalBillLedger,
+            weight_gm: metalBillLedger
+                ? metalBillLedger.weightGm
+                : convertedGm > 0
+                  ? convertedGm
+                  : weightGm > 0
+                    ? Math.round(weightGm * 1000) / 1000
+                    : 0,
+            debit_metal_gm: metalBillLedger
+                ? !isCredit
+                    ? metalBillLedger.weightGm
+                    : 0
+                : convertedGm > 0 && !isCredit
+                  ? convertedGm
+                  : 0,
+            credit_metal_gm: metalBillLedger
+                ? isCredit
+                    ? metalBillLedger.weightGm
+                    : 0
+                : convertedGm > 0 && isCredit
+                  ? convertedGm
+                  : 0,
             jewellery_metal: inferBillJewelleryMetal(s),
         });
     }
@@ -991,6 +1023,24 @@ function billSessionMetalConversion(session, billType) {
     };
 }
 
+function isOfficialMetalBillSession(session) {
+    const s = session && typeof session === 'object' ? session : {};
+    return s.metal_bill === true || s.metalBill === true;
+}
+
+function officialMetalBillLedger(session, linesJson, billTotal) {
+    const s = session && typeof session === 'object' ? session : {};
+    const weight = roundMetalGm(
+        Number(s.metalLedgerWeightGm || s.metalBillWeightGm) || totalWeightGmFromLines(linesJson) || 0,
+    );
+    const net = Number(s.metalBillNetInr);
+    const amt =
+        Number.isFinite(net) && net > 0
+            ? Math.round(net * 100) / 100
+            : Math.round((Number(billTotal) || 0) * 100) / 100;
+    return { weightGm: weight, amountInr: amt };
+}
+
 async function loadShopDaybookOpening(query, resellerUserId, ledgerScope) {
     try {
         const rows = await query(
@@ -1074,6 +1124,13 @@ async function ledgerOpeningBeforeDay(query, resellerUserId, day, laneView) {
         for (const b of bills) {
             const kind = String(b.bill_type || 'sale').toLowerCase();
             const session = parseJsonObject(b.session_json);
+            if (isOfficialMetalBillSession(session)) {
+                const mb = officialMetalBillLedger(session, b.lines_json, b.total_inr);
+                const isCredit = kind === 'credit' || kind === 'sales_return';
+                inr += isCredit ? -mb.amountInr : mb.amountInr;
+                metal += isCredit ? -mb.weightGm : mb.weightGm;
+                continue;
+            }
             const metalConv = billSessionMetalConversion(session, kind);
             const billTotal = Number(b.total_inr) || 0;
             const ledgerAmt = metalConv.convertedGm > 0 && !metalConv.isCredit ? 0 : billTotal;
@@ -1155,13 +1212,22 @@ async function buildDaybook(query, resellerUserId, opts) {
         for (const b of bills) {
             const kind = String(b.bill_type || 'sale').toLowerCase();
             const session = parseJsonObject(b.session_json);
-            const flows = billCashflows(kind, b.total_inr);
+            const metalBill = isOfficialMetalBillSession(session);
+            const metalBillLedger = metalBill
+                ? officialMetalBillLedger(session, b.lines_json, b.total_inr)
+                : null;
+            const billTotal = Number(b.total_inr) || 0;
+            const ledgerAmt = metalBillLedger
+                ? metalBillLedger.amountInr
+                : billSessionMetalConversion(session, kind).convertedGm > 0 &&
+                    kind !== 'credit' &&
+                    kind !== 'sales_return'
+                  ? 0
+                  : billTotal;
+            const flows = billCashflows(kind, ledgerAmt);
             const mode =
                 String(session.paymentMethod || session.payment_mode || session.payMode || '').trim() || '—';
             const metalConv = billSessionMetalConversion(session, kind);
-            const billTotal = Number(b.total_inr) || 0;
-            const ledgerAmt =
-                metalConv.convertedGm > 0 && !metalConv.isCredit ? 0 : billTotal;
             const pieceWt =
                 totalWeightGmFromLines(b.lines_json) ||
                 Number(session && session.returnWeightGm) ||
@@ -1179,16 +1245,23 @@ async function buildDaybook(query, resellerUserId, opts) {
                 payment_mode: mode,
                 reference: b.bill_number || '',
                 amount_inr: ledgerAmt,
-                weight_gm:
-                    metalConv.convertedGm > 0
-                        ? metalConv.convertedGm
-                        : pieceWt > 0
-                          ? Math.round(pieceWt * 1000) / 1000
-                          : 0,
-                debit_metal_gm:
-                    metalConv.convertedGm > 0 && !metalConv.isCredit ? metalConv.convertedGm : 0,
-                credit_metal_gm: 0,
-                rupee_only_debit: metalConv.rupee_only_debit,
+                weight_gm: metalBillLedger
+                    ? metalBillLedger.weightGm
+                    : metalConv.convertedGm > 0
+                      ? metalConv.convertedGm
+                      : pieceWt > 0
+                        ? Math.round(pieceWt * 1000) / 1000
+                        : 0,
+                debit_metal_gm: metalBillLedger
+                    ? metalConv.isCredit
+                        ? 0
+                        : metalBillLedger.weightGm
+                    : metalConv.convertedGm > 0 && !metalConv.isCredit
+                      ? metalConv.convertedGm
+                      : 0,
+                credit_metal_gm: metalBillLedger && metalConv.isCredit ? metalBillLedger.weightGm : 0,
+                rupee_only_debit: metalBillLedger ? false : metalConv.rupee_only_debit,
+                metal_ledger_mode: !!metalBillLedger,
                 ...flows,
             });
         }
@@ -1496,7 +1569,7 @@ async function buildCustomerBalancesReport(query, resellerUserId, opts = {}) {
     }
 
     const billParams = [resellerUserId];
-    let billSql = `SELECT customer_id, customer_name, bill_number, bill_type, total_inr, session_json
+    let billSql = `SELECT customer_id, customer_name, bill_number, bill_type, total_inr, session_json, lines_json
                    FROM reseller_erp_bills
                    WHERE reseller_user_id = $1
                      AND bill_type IN ('sale', 'credit', 'debit', 'sales_return')
@@ -1511,12 +1584,18 @@ async function buildCustomerBalancesReport(query, resellerUserId, opts = {}) {
         if (!cid) continue;
         const bucket = byId.get(cid);
         const kind = String(b.bill_type || 'sale').toLowerCase();
-        const amt = Number(b.total_inr) || 0;
+        const session = parseJsonObject(b.session_json);
+        const metalBill = isOfficialMetalBillSession(session);
+        const mb = metalBill ? officialMetalBillLedger(session, b.lines_json, b.total_inr) : null;
+        const amt = mb ? mb.amountInr : Number(b.total_inr) || 0;
         const isCredit = kind === 'credit' || kind === 'sales_return';
         if (isCredit) bucket.credit += amt;
         else {
             bucket.debit += amt;
             if (kind === 'sale' || kind === 'debit') bucket.billed += amt;
+        }
+        if (mb && mb.weightGm > 0) {
+            bucket.metal += isCredit ? -mb.weightGm : mb.weightGm;
         }
         bucket.tx += 1;
         if (kind === 'sale' && b.bill_number) bucket.bills.push(String(b.bill_number).trim());

@@ -9,6 +9,13 @@ import { erpMcBillingWeightGm } from '@/lib/erp-manual-as-line-pricing'
 import { isMcPerGmBillingType } from '@/lib/erp-mc-type-field'
 import { isMcPerPiece, type PriceBreakdown } from '@/lib/pricing'
 
+function exactMcRateDisplay(n: number): number {
+  if (!Number.isFinite(n)) return n
+  if (Number.isInteger(n)) return n
+  const t = Math.round(n * 10000) / 10000
+  return Number.isInteger(t) ? t : parseFloat(t.toFixed(4))
+}
+
 export function isGoldSlabRLine(line: ErpBillLine, slab: ErpRateSlab): boolean {
   return slab === 'R' && String(line.metal_type || '').toLowerCase().startsWith('gold')
 }
@@ -54,19 +61,25 @@ export function applyErpLineMcDisplayFromBreakdown(
     }
   }
   const qty = Math.max(1, Number(line.qty) || 1)
+  const slabMc = pieceSlabMcRate(line, slab)
+  const catalogMc = Number(line.mc_rate)
   let rate: number | null = null
-  if (isMcPerGmBillingType(line.mc_type)) {
+  if (slabMc != null && Number.isFinite(Number(slabMc)) && Number(slabMc) > 0) {
+    rate = Number(slabMc)
+  } else if (Number.isFinite(catalogMc) && catalogMc > 0) {
+    rate = catalogMc
+  } else if (isMcPerGmBillingType(line.mc_type)) {
     const wt = erpMcBillingWeightGm(line, slab)
-    if (wt > 0) rate = Math.round((bd.mc / wt) * 100) / 100
-  } else if (isMcPerPiece(line.mc_type) || Number(line.mc_rate) > 0) {
-    rate = Math.round((bd.mc / qty) * 100) / 100
+    if (wt > 0) rate = bd.mc / wt
+  } else if (isMcPerPiece(line.mc_type) || catalogMc > 0) {
+    rate = bd.mc / qty
   }
   return {
-    displayMcInr: Math.round(bd.mc),
-    displayMcRatePerUnit: rate != null ? rate : undefined,
+    displayMcInr: Math.round(bd.mc * 100) / 100,
+    displayMcRatePerUnit: rate != null ? exactMcRateDisplay(rate) : undefined,
     displayMcBeforeDiscount:
       bd.mc_before_discount != null && bd.mc_before_discount > bd.mc
-        ? Math.round(bd.mc_before_discount)
+        ? Math.round(bd.mc_before_discount * 100) / 100
         : undefined,
     displayMcDiscountPct: bd.mc_discount_pct ?? undefined,
   }
@@ -89,11 +102,11 @@ export function billingMcDisplay(
     !isGoldSlabRMcPricing(line, slab, goldSlabRShowMc)
   ) {
     const n = Number(line.displayMcRatePerUnit)
-    return Number.isInteger(n) ? n : Math.round(n * 100) / 100
+    return exactMcRateDisplay(n)
   }
   if (slab !== 'R' && slab !== 'Q' && lineHasPieceSlabFields(line) && !line.manualEntry) {
     const slabMc = pieceSlabMcRate(line, slab)
-    if (slabMc != null && Number.isFinite(Number(slabMc))) return Math.round(Number(slabMc))
+    if (slabMc != null && Number.isFinite(Number(slabMc))) return exactMcRateDisplay(Number(slabMc))
   }
   return line.mc_rate ?? ''
 }

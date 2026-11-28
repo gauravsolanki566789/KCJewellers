@@ -354,11 +354,13 @@ type ConfirmProps = {
   netTotal: number
   itemCount: number
   busy?: boolean
-  onConfirm: (opts: { billNumber: string; placeOfSupply: string }) => void
+  onConfirm: (opts: { billNumber: string; placeOfSupply: string; billKind: 'amount' | 'metal' }) => void
   /** When false, sale goes to Hitesh/Jainav ledger — no GST invoice. */
   isOfficialGst?: boolean
   customerGst?: string
   defaultPlaceOfSupply?: string
+  /** Ledger in metal is on for this shop — Amount vs Metal bill. */
+  metalLedgerOn?: boolean
 }
 
 const MANUAL_BILL_VALUE = '__manual__'
@@ -374,14 +376,21 @@ export function ErpSaveBillConfirmDialog({
   isOfficialGst = true,
   customerGst = '',
   defaultPlaceOfSupply = '',
+  metalLedgerOn = false,
 }: ConfirmProps) {
   const [autoNumber, setAutoNumber] = useState('')
   const [manualSuggestion, setManualSuggestion] = useState('')
   const [billChoice, setBillChoice] = useState('')
   const [manualBillNumber, setManualBillNumber] = useState('')
   const [placeOfSupply, setPlaceOfSupply] = useState('')
+  const [billKind, setBillKind] = useState<'amount' | 'metal'>('amount')
   const [localErr, setLocalErr] = useState('')
   const [numberLoadErr, setNumberLoadErr] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setBillKind('amount')
+  }, [open])
 
   useEffect(() => {
     if (!open || !isOfficialGst) return
@@ -463,10 +472,10 @@ export function ErpSaveBillConfirmDialog({
         setLocalErr('Place of supply is required for GST bills.')
         return
       }
-      onConfirm({ billNumber, placeOfSupply: placeOfSupply.trim() })
+      onConfirm({ billNumber, placeOfSupply: placeOfSupply.trim(), billKind })
       return
     }
-    onConfirm({ billNumber: '', placeOfSupply: '' })
+    onConfirm({ billNumber: '', placeOfSupply: '', billKind })
   }
 
   return (
@@ -484,6 +493,21 @@ export function ErpSaveBillConfirmDialog({
             ({itemCount} item{itemCount !== 1 ? 's' : ''}, {formatErpInr(netTotal)}).
           </DialogDescription>
         </DialogHeader>
+
+        {metalLedgerOn && !isOfficialGst ? (
+          <label className="block text-xs font-semibold text-[var(--color-jewelry-black,#1a1814)]/70">
+            Bill type
+            <select
+              className={`${erpInputCls} mt-1`}
+              value={billKind}
+              onChange={(e) => setBillKind(e.target.value === 'metal' ? 'metal' : 'amount')}
+              disabled={busy}
+            >
+              <option value="amount">Amount bill</option>
+              <option value="metal">Metal bill</option>
+            </select>
+          </label>
+        ) : null}
 
         {isOfficialGst ? (
           <div className="space-y-3">
@@ -519,6 +543,20 @@ export function ErpSaveBillConfirmDialog({
                     Suggested next: <span className="font-mono font-semibold">{manualSuggestion}</span>
                   </p>
                 ) : null}
+              </label>
+            ) : null}
+            {metalLedgerOn ? (
+              <label className="block text-xs font-semibold text-[var(--color-jewelry-black,#1a1814)]/70">
+                Bill type
+                <select
+                  className={`${erpInputCls} mt-1`}
+                  value={billKind}
+                  onChange={(e) => setBillKind(e.target.value === 'metal' ? 'metal' : 'amount')}
+                  disabled={busy}
+                >
+                  <option value="amount">Amount bill</option>
+                  <option value="metal">Metal bill</option>
+                </select>
               </label>
             ) : null}
             <label className="block text-xs font-semibold text-[var(--color-jewelry-black,#1a1814)]/70">

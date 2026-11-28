@@ -72,6 +72,10 @@ const MC_FIELD_TO_SLAB: Record<string, ErpRateSlab> = {
   metal_slab_f_pct: 'F',
 }
 
+export function isSlabRelatedFieldKey(fieldKey: string): boolean {
+  return fieldKey in MC_FIELD_TO_SLAB || fieldKey === 'wastage_pct' || fieldKey === 'mc_rate'
+}
+
 export function slabRelatedFieldLabel(fieldKey: string, labels?: Record<string, string> | null): string {
   const slab = MC_FIELD_TO_SLAB[fieldKey]
   if (!slab) {
@@ -82,4 +86,12 @@ export function slabRelatedFieldLabel(fieldKey: string, labels?: Record<string, 
   const name = slabLabel(slab, labels)
   if (fieldKey.startsWith('metal_')) return `Met ${name}%`
   return `MC ${name}`
+}
+
+export function formatSlabRateValue(v: unknown): string {
+  if (v == null || v === '') return '—'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return String(v)
+  if (Number.isInteger(n)) return String(n)
+  return String(parseFloat(n.toFixed(4)))
 }

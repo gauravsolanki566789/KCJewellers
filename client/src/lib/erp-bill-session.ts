@@ -68,6 +68,15 @@ export type ErpBillSession = {
   jainavSettlement?: Record<string, unknown>
   jainavMetalOwedGm?: number
   jainavMcOwedInr?: number
+  /** Official GST metal-ledger shop: Amount bill vs Metal (job-work) bill. */
+  metal_bill?: boolean
+  metal_ledger_mode?: 'amount' | 'metal'
+  metalLedgerWeightGm?: number
+  metalBillMcInr?: number
+  metalBillGstInr?: number
+  metalBillNetInr?: number
+  metalBillItemName?: string
+  metalBillHsn?: string
 }
 
 export function erpBillGstEnabled(

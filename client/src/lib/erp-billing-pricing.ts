@@ -259,7 +259,7 @@ function computeSilverGiftMcGmBreakdown(
   const mcDisc =
     mcBase > mcPerG && mcBase > 0 ? Math.round((1 - mcPerG / mcBase) * 100) : 0
   const metalPart = Math.round(metalRate * billWt * qty)
-  const mc = Math.round(mcPerG * billWt * qty)
+  const mc = Math.round(mcPerG * billWt * qty * 100) / 100
   const taxable = metalPart + mc
   const totalWithGst = Math.round(taxable * (1 + gstPct / 100))
   const gstAmt = totalWithGst - taxable

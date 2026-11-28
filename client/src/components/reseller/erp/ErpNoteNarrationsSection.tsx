@@ -102,10 +102,6 @@ export function ErpNoteNarrationsSection({
   return (
     <div className={`${erpCardCls} space-y-4`}>
       <p className="text-sm font-semibold text-[var(--color-jewelry-black,#1a1814)]">{title}</p>
-      <p className="text-xs leading-relaxed text-[var(--color-jewelry-black,#1a1814)]/55">
-        When turned on, staff must pick a narration when issuing {kind === 'credit' ? 'credit' : 'debit'} notes. It
-        appears on the note PDF.
-      </p>
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--color-slate-700,#e8e4df)] bg-[var(--color-slate-900,#f7f4ef)]/40 px-3 py-2.5">
         <p className="text-sm text-[var(--color-jewelry-black,#1a1814)]">
           {enabled ? 'On — narration required on issue.' : 'Off — narration hidden (default).'}
@@ -114,9 +110,7 @@ export function ErpNoteNarrationsSection({
           <button type="button" className={erpBtnGhost} disabled={toggleBusy} onClick={() => void toggleEnabled()}>
             {toggleBusy ? <Loader2 className="size-4 animate-spin" /> : enabled ? 'Turn off' : 'Turn on'}
           </button>
-        ) : (
-          <p className="text-xs text-[var(--color-jewelry-black,#1a1814)]/45">Unlock Jainav mode to change this.</p>
-        )}
+        ) : null}
       </div>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <label className="min-w-0 flex-1 text-xs text-[var(--color-jewelry-black,#1a1814)]/55">

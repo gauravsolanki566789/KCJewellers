@@ -130,11 +130,11 @@ export function computeMcValueForPdf(
   if (mc == null) return null
   if (!isMcPerGmBillingType(line.mc_type)) {
     const qty = Math.max(1, Number(line.qty) || 1)
-    return Math.round(mc * qty)
+    return Math.round(mc * qty * 100) / 100
   }
   const wt = erpMcBillingWeightGm(line, rateSlab)
   if (wt <= 0) return null
-  return Math.round(mc * wt)
+  return Math.round(mc * wt * 100) / 100
 }
 
 function num(v: unknown): number {

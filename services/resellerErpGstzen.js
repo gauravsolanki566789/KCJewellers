@@ -158,15 +158,108 @@ function resolveEwayConfig(settings) {
     };
 }
 
+function parseBillSession(bill) {
+    let session = bill && bill.session;
+    if (typeof session === 'string') {
+        try {
+            session = JSON.parse(session);
+        } catch {
+            session = {};
+        }
+    }
+    return session && typeof session === 'object' ? session : {};
+}
+
 function buildEinvoicePayload(bill, gst, customer, opts = {}) {
     const gstin = String(gst.gstin || '')
         .trim()
         .toUpperCase();
     const stcd = gstStateCode(gstin);
+    const session = parseBillSession(bill);
+    const metalBill = session.metal_bill === true || session.metalBill === true;
     const lines = Array.isArray(bill.lines) ? bill.lines : [];
     let assVal = 0;
     let cgstVal = 0;
     let sgstVal = 0;
+
+    if (metalBill) {
+        const taxable = Math.round((Number(session.metalBillMcInr) || Number(bill.total_inr) / 1.05 || 0) * 100) / 100;
+        const gstAmt = Math.round((Number(session.metalBillGstInr) || taxable * 0.05) * 100) / 100;
+        const half = Math.round((gstAmt / 2) * 100) / 100;
+        const net = Number(session.metalBillNetInr) || Number(bill.total_inr) || Math.round(taxable + gstAmt);
+        assVal = taxable;
+        cgstVal = half;
+        sgstVal = Math.round((gstAmt - half) * 100) / 100;
+        const itemList = [
+            {
+                SlNo: '1',
+                PrdDesc: String(session.metalBillItemName || 'JOB WORK CHARGES RECEIVED').slice(0, 300),
+                IsServc: 'Y',
+                HsnCd: String(session.metalBillHsn || '998537').replace(/\D/g, '').slice(0, 8) || '998537',
+                Qty: 0,
+                Unit: 'OTH',
+                UnitPrice: taxable,
+                TotAmt: taxable,
+                AssAmt: taxable,
+                GstRt: 5,
+                CgstAmt: cgstVal,
+                SgstAmt: sgstVal,
+                IgstAmt: 0,
+                TotItemVal: net,
+            },
+        ];
+        const buyerGstin = String(customer?.gstin || session.customerGst || 'URP').trim().toUpperCase();
+        const buyerName = String(bill.customer_name || customer?.name || 'Walk-in customer').slice(0, 100);
+        const place = String(session.placeOfSupply || gst.placeOfSupply || 'Tamil Nadu').slice(0, 100);
+        const payload = {
+            Version: '1.1',
+            TranDtls: {
+                TaxSch: 'GST',
+                SupTyp: buyerGstin.length === 15 ? 'B2B' : 'B2C',
+                RegRev: 'N',
+                IgstOnIntra: 'N',
+            },
+            DocDtls: {
+                Typ: 'INV',
+                No: String(bill.bill_number || bill.id).slice(0, 16),
+                Dt: formatNicDate(bill.bill_date || bill.created_at),
+            },
+            SellerDtls: {
+                Gstin: gstin,
+                LglNm: String(gst.legalName || '').slice(0, 100),
+                TrdNm: String(gst.legalName || '').slice(0, 100),
+                Addr1: place.slice(0, 100) || 'Business address',
+                Loc: place.slice(0, 50) || 'City',
+                Pin: 600001,
+                Stcd: stcd,
+            },
+            BuyerDtls: {
+                Gstin: buyerGstin.length === 15 ? buyerGstin : 'URP',
+                LglNm: buyerName,
+                Pos: gstStateCode(buyerGstin.length === 15 ? buyerGstin : gstin) || stcd,
+                Addr1: String(customer?.address || place).slice(0, 100) || 'Address',
+                Loc: place.slice(0, 50) || 'City',
+                Pin: 600001,
+                Stcd: gstStateCode(buyerGstin.length === 15 ? buyerGstin : gstin) || stcd,
+            },
+            ItemList: itemList,
+            ValDtls: {
+                AssVal: assVal,
+                CgstVal: cgstVal,
+                SgstVal: sgstVal,
+                IgstVal: 0,
+                TotInvVal: net,
+            },
+        };
+        if (opts.withEway) {
+            payload.EwbDtls = {
+                TransMode: '1',
+                Distance: 0,
+                VehType: 'R',
+            };
+        }
+        return payload;
+    }
 
     const itemList = lines.map((line, i) => {
         const total = Number(line.lineTotalInr) || 0;

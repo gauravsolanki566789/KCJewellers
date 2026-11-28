@@ -26,6 +26,8 @@ import { ErpRfidLinkDialog } from '@/components/reseller/erp/ErpRfidLinkDialog'
 import { printStockLabels, type PrintLabelPieceOverride } from '@/lib/erp-print-labels'
 import { Check, Loader2, MapPin, Plus, Radio, RotateCcw, Save, Tag, Trash2 } from 'lucide-react'
 import { useErpOperator } from '@/context/ErpOperatorContext'
+import { useErpSlabSettings } from '@/hooks/useErpSlabSettings'
+import { isSlabRelatedFieldKey, slabRelatedFieldLabel } from '@/lib/erp-slab-settings'
 
 type FloorOption = {
   id: string
@@ -159,6 +161,9 @@ export function ErpStockExcelEditor({
   syncSelectedIds?: number[]
 }) {
   const { canDeleteRecords } = useErpOperator()
+  const { settings: shopSlabSettings } = useErpSlabSettings()
+  const columnLabel = (key: string, fallback: string) =>
+    isSlabRelatedFieldKey(key) ? slabRelatedFieldLabel(key, shopSlabSettings.labels) : fallback
   const [drafts, setDrafts] = useState<StockRowDraft[]>([])
   const tableColumns = useMemo(() => visibleStockEditorColumns(drafts), [drafts])
   const [baseline, setBaseline] = useState<StockRowDraft[]>([])
@@ -397,7 +402,7 @@ export function ErpStockExcelEditor({
         return { ...d, values: nextValues }
       }),
     )
-    const label = STOCK_EDITOR_COLUMNS.find((c) => c.key === bulkField)?.shortLabel || bulkField
+    const label = col ? columnLabel(col.key, col.shortLabel || col.label) : bulkField
     setMessage(`Set ${label} = "${val}" on ${targetIds.size} row(s) — click Save edits.`)
     setError(null)
   }
@@ -886,7 +891,7 @@ export function ErpStockExcelEditor({
             >
               {tableColumns.filter((c) => c.key !== 'barcode' && c.key !== 'image_url').map((c) => (
                 <option key={c.key} value={c.key}>
-                  {c.shortLabel || c.label}
+                  {columnLabel(c.key, c.shortLabel || c.label)}
                 </option>
               ))}
             </select>
@@ -1020,7 +1025,7 @@ export function ErpStockExcelEditor({
               <th className="px-2 py-2 font-semibold text-[var(--color-jewelry-black,#1a1814)]/55">Status</th>
               {tableColumns.map((col) => (
                 <th key={col.key} className="whitespace-nowrap px-2 py-2 font-semibold text-[var(--color-jewelry-black,#1a1814)]/55">
-                  {col.shortLabel || col.label}
+                  {columnLabel(col.key, col.shortLabel || col.label)}
                 </th>
               ))}
               <th className="sticky right-0 z-10 whitespace-nowrap bg-[var(--color-slate-900,#faf8f4)] px-2 py-2 font-semibold text-[var(--color-jewelry-black,#1a1814)]/55">

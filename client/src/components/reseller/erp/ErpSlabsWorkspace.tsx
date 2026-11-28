@@ -1,7 +1,6 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
-import Link from 'next/link'
 import axios from '@/lib/axios'
 import { Check, Loader2, Plus, Search, Trash2 } from 'lucide-react'
 import {
@@ -15,10 +14,10 @@ import {
 import { ErpBillingSuggestField } from '@/components/reseller/erp/ErpBillingSuggestField'
 import { useErpOperator } from '@/context/ErpOperatorContext'
 import { useErpSlabSettings } from '@/hooks/useErpSlabSettings'
-import { RESELLER_MC_SLABS_PATH } from '@/lib/routes'
 import {
   DEFAULT_ERP_SLAB_LABELS,
   ERP_SLAB_KEYS,
+  formatSlabRateValue,
   parseErpSlabSettings,
   slabRelatedFieldLabel,
 } from '@/lib/erp-slab-settings'
@@ -465,24 +464,46 @@ export function ErpSlabsWorkspace() {
         </button>
 
         {savedRows.length > 0 ? (
-          <div className="overflow-x-auto rounded-xl border border-[var(--color-slate-700,#e8e4df)]">
+          <div className="-mx-1 overflow-x-auto rounded-xl border border-[var(--color-slate-700,#e8e4df)]">
             <table className="min-w-full text-left text-xs">
               <thead className="bg-[var(--color-slate-900,#f7f4ef)] text-[10px] font-bold uppercase text-[var(--color-jewelry-black,#1a1814)]/55">
                 <tr>
-                  <th className="px-3 py-2.5">Style</th>
-                  <th className="px-3 py-2.5">SKU</th>
-                  <th className="px-3 py-2.5">Metal</th>
-                  <th className="px-3 py-2.5 text-right">MC</th>
+                  <th className="whitespace-nowrap px-3 py-2.5">Style</th>
+                  <th className="whitespace-nowrap px-3 py-2.5">SKU</th>
+                  <th className="whitespace-nowrap px-3 py-2.5">Metal</th>
+                  {RATE_KEYS.filter((key) => {
+                    if (key === 'mc_rate_slab_r' || key === 'metal_slab_r_pct') return enabled.R
+                    if (key === 'mc_rate_slab_r1' || key === 'metal_slab_r1_pct') return enabled.R1
+                    if (key === 'mc_rate_slab_w' || key === 'metal_slab_w_pct') return enabled.W
+                    if (key === 'mc_rate_slab_f' || key === 'metal_slab_f_pct') return enabled.F
+                    return true
+                  }).map((key) => (
+                    <th key={key} className="whitespace-nowrap px-3 py-2.5 text-right">
+                      {slabRelatedFieldLabel(key, labels)}
+                    </th>
+                  ))}
                   <th className="px-3 py-2.5 w-16" />
                 </tr>
               </thead>
               <tbody>
                 {savedRows.map((row) => (
                   <tr key={`${row.style_code}-${row.sku}-${row.id}`} className="border-t border-[var(--color-slate-700,#e8e4df)]/60">
-                    <td className="px-3 py-2.5 font-medium text-[var(--color-jewelry-black,#1a1814)]">{row.style_code}</td>
-                    <td className="px-3 py-2.5">{row.sku}</td>
-                    <td className="px-3 py-2.5">{row.metal_type}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{row.mc_rate ?? '—'}</td>
+                    <td className="whitespace-nowrap px-3 py-2.5 font-medium text-[var(--color-jewelry-black,#1a1814)]">
+                      {row.style_code}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5">{row.sku}</td>
+                    <td className="whitespace-nowrap px-3 py-2.5">{row.metal_type}</td>
+                    {RATE_KEYS.filter((key) => {
+                      if (key === 'mc_rate_slab_r' || key === 'metal_slab_r_pct') return enabled.R
+                      if (key === 'mc_rate_slab_r1' || key === 'metal_slab_r1_pct') return enabled.R1
+                      if (key === 'mc_rate_slab_w' || key === 'metal_slab_w_pct') return enabled.W
+                      if (key === 'mc_rate_slab_f' || key === 'metal_slab_f_pct') return enabled.F
+                      return true
+                    }).map((key) => (
+                      <td key={key} className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-[var(--color-jewelry-black,#1a1814)]">
+                        {formatSlabRateValue(row[key])}
+                      </td>
+                    ))}
                     <td className="px-3 py-2.5">
                       {canDeleteRecords ? (
                         <button
@@ -501,15 +522,6 @@ export function ErpSlabsWorkspace() {
             </table>
           </div>
         ) : null}
-      </div>
-
-      <div className={erpCardCls}>
-        <p className="mb-2 text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
-          Catalogue MC discount slabs (storefront / wholesale %) stay on the original MC slabs page.
-        </p>
-        <Link href={RESELLER_MC_SLABS_PATH} className={erpBtnGhost}>
-          Open catalogue MC discounts
-        </Link>
       </div>
     </div>
   )

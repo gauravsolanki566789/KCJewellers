@@ -41,10 +41,7 @@ import {
 } from '@/lib/erp-date-format'
 import { formatPvWeightGrams } from '@/lib/erp-pv-weight'
 import { formatPvCategoryLabel, PV_CATEGORY_OPTIONS } from '@/lib/erp-pv-category'
-import {
-  ErpLedgerCategoriesSection,
-  type LedgerCategoryRow,
-} from '@/components/reseller/erp/ErpLedgerCategoriesSection'
+import { type LedgerCategoryRow } from '@/components/reseller/erp/ErpLedgerCategoriesSection'
 import { formatLedgerTransactionKind } from '@/lib/erp-ledger-labels'
 import { exportDaybookToTallyLocal } from '@/lib/erp-tally-export'
 import { downloadDaybookPdf, type DaybookExportData } from '@/lib/erp-ledger-statement-pdf'
@@ -3004,11 +3001,6 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                   </div>
                 ))}
               </div>
-            </div>
-          ) : null}
-          {metalLedgerShop ? (
-            <div className="pt-2">
-              <ErpLedgerCategoriesSection onChanged={(rows) => setLedgerCategories(rows)} />
             </div>
           ) : null}
         </div>

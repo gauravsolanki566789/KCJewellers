@@ -185,12 +185,12 @@ export function computeErpPieceSlabBreakdown(
   const skipTierDisc = effectiveMcPerUnit != null && Number(effectiveMcPerUnit) > 0
   if (mcGm) {
     metalPart = Math.round(metalRate * billWt * qty)
-    mc = Math.round(mcRate * mcWt * qty)
-    if (!skipTierDisc && mcDisc > 0) mc = Math.round(mc * (1 - mcDisc / 100))
+    mc = Math.round(mcRate * mcWt * qty * 100) / 100
+    if (!skipTierDisc && mcDisc > 0) mc = Math.round(mc * (1 - mcDisc / 100) * 100) / 100
   } else {
     metalPart = Math.round(metalRate * billWt * qty)
-    const mcRaw = Math.round(mcRate * qty)
-    mc = !skipTierDisc && mcDisc > 0 ? Math.round(mcRaw * (1 - mcDisc / 100)) : mcRaw
+    const mcRaw = Math.round(mcRate * qty * 100) / 100
+    mc = !skipTierDisc && mcDisc > 0 ? Math.round(mcRaw * (1 - mcDisc / 100) * 100) / 100 : mcRaw
   }
 
   const taxable = metalPart + mc + stone + box

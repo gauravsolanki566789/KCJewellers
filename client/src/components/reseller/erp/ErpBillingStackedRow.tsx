@@ -20,6 +20,8 @@ import type { ResellerSlabSettings } from '@/lib/catalog-slab-pricing'
 import { formatErpInr } from '@/lib/reseller-erp-modules'
 import type { GstInvoiceItem } from '@/components/reseller/erp/ErpGstInvoiceItemsPanel'
 import { X } from 'lucide-react'
+import { useErpSlabSettings } from '@/hooks/useErpSlabSettings'
+import { isSlabRelatedFieldKey, slabRelatedFieldLabel } from '@/lib/erp-slab-settings'
 
 const WEIGHT_BAND: { key: keyof ErpBillLine | 'metal_slab_pct'; label: string }[] = [
   { key: 'weightGm', label: 'NETWT' },
@@ -126,6 +128,9 @@ export function ErpBillingStackedRow({
   gstInvoiceItems = [],
   tableColSpan = 26,
 }: Props) {
+  const { settings: shopSlabSettings } = useErpSlabSettings()
+  const bandLabel = (key: string, fallback: string) =>
+    isSlabRelatedFieldKey(key) ? slabRelatedFieldLabel(key, shopSlabSettings.labels) : fallback
   const oldExchange = line.manualCategory === 'old'
   const shipping = line.manualCategory === 'shipping'
   const gift = isGiftManualLine(line)
@@ -387,7 +392,7 @@ export function ErpBillingStackedRow({
                     key={f.key}
                     className="min-w-0 text-[10px] font-semibold uppercase tracking-wide text-emerald-800"
                   >
-                    {f.label}
+                    {bandLabel(String(f.key), f.label)}
                     {bandInput(f.key)}
                   </label>
                 ))}
@@ -415,7 +420,7 @@ export function ErpBillingStackedRow({
                     key={f.key}
                     className="min-w-0 text-[10px] font-semibold uppercase tracking-wide text-emerald-800"
                   >
-                    {f.label}
+                    {bandLabel(String(f.key), f.label)}
                     {f.key === 'metal_type' ? (
                       bandInput('metal_type')
                     ) : f.key === 'box_charges' && (line.designBoxOptions?.length ?? 0) >= 2 ? (
