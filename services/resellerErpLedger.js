@@ -60,6 +60,20 @@ function parseAmount(v) {
     return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
+function parseGrossWtGm(v) {
+    if (v == null || v === '') return null;
+    const n = Number(String(v).replace(/[,gG\s]/g, ''));
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return roundMetalGm(n);
+}
+
+function parseMetalPct(v) {
+    if (v == null || v === '') return null;
+    const n = Number(String(v).replace(/[,%\s]/g, ''));
+    if (!Number.isFinite(n) || n <= 0 || n > 100.5) return null;
+    return Math.round(n * 10000) / 10000;
+}
+
 function excelSerialToIso(n) {
     if (!Number.isFinite(n) || n < 20000 || n > 80000) return null;
     const epoch = Date.UTC(1899, 11, 30);
@@ -200,9 +214,91 @@ function mapLedgerEntry(row, extras = {}) {
         metal_gm: metalGmFromLedgerRow(row) || null,
         jewellery_metal: normalizeJewelleryMetal(row.jewellery_metal) || null,
         ledger_category: row.ledger_category || null,
+        gross_wt_gm: row.gross_wt_gm != null ? Number(row.gross_wt_gm) : null,
+        metal_pct: row.metal_pct != null ? Number(row.metal_pct) : null,
+        source_ledger_entry_id:
+            row.source_ledger_entry_id != null ? Number(row.source_ledger_entry_id) : null,
         created_at: row.created_at,
         updated_at: row.updated_at,
     };
+}
+
+async function issuedNetGmAgainstReceipt(query, resellerUserId, receiptId, excludeEntryId = null) {
+    const params = [resellerUserId, receiptId];
+    let sql = `
+        SELECT COALESCE(SUM(ABS(metal_gm)), 0)::numeric AS issued
+        FROM reseller_erp_ledger_entries
+        WHERE reseller_user_id = $1
+          AND source_ledger_entry_id = $2
+          AND is_suspense = false`;
+    if (excludeEntryId != null) {
+        params.push(excludeEntryId);
+        sql += ` AND id <> $${params.length}`;
+    }
+    const rows = await query(sql, params);
+    return Number(rows[0]?.issued) || 0;
+}
+
+async function listAvailableMetalReceipts(query, resellerUserId, opts) {
+    const customerId = opts.customerId;
+    const jewelleryMetal = normalizeJewelleryMetal(opts.jewelleryMetal);
+    const ledgerScope = LEDGER_SCOPES.has(opts.ledgerScope) ? opts.ledgerScope : 'official';
+    if (!customerId) return [];
+    const rows = await query(
+        `SELECT e.id, e.entry_date, e.reference_no, e.metal_gm, e.gross_wt_gm, e.metal_pct,
+                e.jewellery_metal, e.ledger_category, e.created_at,
+                COALESCE(iss.issued_gm, 0)::numeric AS issued_gm
+         FROM reseller_erp_ledger_entries e
+         LEFT JOIN (
+             SELECT source_ledger_entry_id, SUM(ABS(metal_gm)) AS issued_gm
+             FROM reseller_erp_ledger_entries
+             WHERE reseller_user_id = $1
+               AND source_ledger_entry_id IS NOT NULL
+               AND is_suspense = false
+             GROUP BY source_ledger_entry_id
+         ) iss ON iss.source_ledger_entry_id = e.id
+         WHERE e.reseller_user_id = $1
+           AND e.customer_id = $2
+           AND e.entry_type = 'payment_in'
+           AND LOWER(COALESCE(e.payment_mode, '')) = 'metal'
+           AND e.fixed_asset_metal = false
+           AND e.is_suspense = false
+           AND e.metal_gm IS NOT NULL
+           AND ABS(e.metal_gm) >= 0.0005
+           AND e.ledger_scope = $3
+         ORDER BY e.entry_date DESC, e.id DESC
+         LIMIT 200`,
+        [resellerUserId, customerId, ledgerScope],
+    );
+    const out = [];
+    for (const r of rows) {
+        const jm = normalizeJewelleryMetal(r.jewellery_metal) || 'silver';
+        if (jewelleryMetal && jm !== jewelleryMetal) continue;
+        const receivedNet = Math.abs(parseMetalGm(r.metal_gm) || 0);
+        const issued = Number(r.issued_gm) || 0;
+        const remaining = roundMetalGm(receivedNet - issued);
+        if (remaining < 0.001) continue;
+        let gross = parseGrossWtGm(r.gross_wt_gm);
+        let pct = parseMetalPct(r.metal_pct);
+        if (gross == null && receivedNet > 0) gross = receivedNet;
+        if (pct == null) pct = 100;
+        const fineFromGross = gross != null && pct != null ? roundMetalGm(gross * (pct / 100)) : null;
+        out.push({
+            id: r.id,
+            entry_date: normDateIso(r.entry_date) || r.entry_date,
+            reference_no: r.reference_no || null,
+            gross_wt_gm: gross,
+            metal_pct: pct,
+            received_metal_gm: receivedNet,
+            remaining_metal_gm: remaining,
+            metal_gm: remaining,
+            fine_metal_gm: fineFromGross,
+            jewellery_metal: jm,
+            ledger_category: r.ledger_category || null,
+            created_at: r.created_at,
+        });
+    }
+    return out;
 }
 
 async function ensureLedgerSchema(pool) {
@@ -255,6 +351,16 @@ async function ensureLedgerSchema(pool) {
             ADD COLUMN IF NOT EXISTS jewellery_metal VARCHAR(16);
         ALTER TABLE reseller_erp_ledger_entries
             ADD COLUMN IF NOT EXISTS ledger_category VARCHAR(64);
+        ALTER TABLE reseller_erp_ledger_entries
+            ADD COLUMN IF NOT EXISTS gross_wt_gm NUMERIC(14, 3);
+        ALTER TABLE reseller_erp_ledger_entries
+            ADD COLUMN IF NOT EXISTS metal_pct NUMERIC(8, 4);
+        ALTER TABLE reseller_erp_ledger_entries
+            ADD COLUMN IF NOT EXISTS source_ledger_entry_id INTEGER
+            REFERENCES reseller_erp_ledger_entries(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_reseller_erp_ledger_source_receipt
+            ON reseller_erp_ledger_entries (reseller_user_id, source_ledger_entry_id)
+            WHERE source_ledger_entry_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS reseller_erp_daybook_openings (
             id SERIAL PRIMARY KEY,
             reseller_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -692,6 +798,28 @@ function registerResellerErpLedgerRoutes(app, deps) {
 
     ensureLedgerSchema(pool).catch((e) => console.warn('erp ledger schema:', e.message));
 
+    app.get('/api/reseller/erp/ledger/metal-receipts', checkAuth, erpGate, async (req, res) => {
+        try {
+            const customerId = parseInt(String(req.query.customer_id || ''), 10);
+            if (!Number.isFinite(customerId) || customerId <= 0) {
+                return res.status(400).json({ error: 'customer_id required' });
+            }
+            const jewelleryMetal = normalizeJewelleryMetal(
+                req.query.jewellery_metal || req.query.jewelleryMetal || req.query.metal,
+            );
+            const ledgerScope = resolveRequestedLedgerScope(req, req.query.ledger_scope);
+            const receipts = await listAvailableMetalReceipts(query, req.user.id, {
+                customerId,
+                jewelleryMetal,
+                ledgerScope,
+            });
+            res.json({ receipts });
+        } catch (e) {
+            console.error('erp ledger metal-receipts:', e);
+            res.status(500).json({ error: e.message || 'Failed to load metal receipts' });
+        }
+    });
+
     app.get('/api/reseller/erp/ledger/entries', checkAuth, erpGate, async (req, res) => {
         try {
             const from = parseDateOrNull(req.query.from);
@@ -992,6 +1120,88 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     });
                 }
             }
+            let grossWtGm = parseGrossWtGm(req.body.gross_wt_gm ?? req.body.grossWtGm);
+            let metalPct = parseMetalPct(req.body.metal_pct ?? req.body.metalPct);
+            let sourceLedgerEntryId =
+                req.body.source_ledger_entry_id != null
+                    ? parseInt(String(req.body.source_ledger_entry_id), 10) || null
+                    : req.body.sourceLedgerEntryId != null
+                      ? parseInt(String(req.body.sourceLedgerEntryId), 10) || null
+                      : null;
+            if (
+                entryType === 'payment_in' &&
+                paymentMode === 'metal' &&
+                !fixedAssetMetal &&
+                resolvedMetalGm != null &&
+                Math.abs(resolvedMetalGm) >= 0.0005
+            ) {
+                if (grossWtGm == null && metalPct != null && metalPct > 0) {
+                    grossWtGm = roundMetalGm(Math.abs(resolvedMetalGm) / (metalPct / 100));
+                } else if (metalPct == null && grossWtGm != null && grossWtGm > 0) {
+                    metalPct =
+                        Math.round((Math.abs(resolvedMetalGm) / grossWtGm) * 100 * 10000) / 10000;
+                }
+            }
+            if (metalKind === 'issued' && !fixedAssetMetal && customerId) {
+                const receipts = await listAvailableMetalReceipts(query, req.user.id, {
+                    customerId,
+                    jewelleryMetal,
+                    ledgerScope,
+                });
+                const shopAdmin = isErpShopAdmin(req);
+                if (!shopAdmin && receipts.length > 0 && !sourceLedgerEntryId) {
+                    return res.status(400).json({ error: 'Select which received metal to issue' });
+                }
+                if (sourceLedgerEntryId) {
+                    const src = receipts.find((x) => x.id === sourceLedgerEntryId);
+                    if (!src) {
+                        return res.status(400).json({ error: 'Selected metal receipt is not available' });
+                    }
+                    const issueGm = Math.abs(resolvedMetalGm || 0);
+                    if (issueGm < 0.0005) {
+                        return res.status(400).json({ error: 'Enter metal weight in grams' });
+                    }
+                    if (issueGm > src.remaining_metal_gm + 0.0005) {
+                        return res.status(400).json({
+                            error: `Only ${src.remaining_metal_gm.toFixed(3)} g remaining on ${src.reference_no || 'receipt'}`,
+                        });
+                    }
+                    if (!shopAdmin) {
+                        if (
+                            grossWtGm != null &&
+                            src.gross_wt_gm != null &&
+                            Math.abs(grossWtGm - src.gross_wt_gm) > 0.0005
+                        ) {
+                            return res.status(400).json({ error: 'Gross weight is locked to the selected receipt' });
+                        }
+                        if (
+                            metalPct != null &&
+                            src.metal_pct != null &&
+                            Math.abs(metalPct - src.metal_pct) > 0.0001
+                        ) {
+                            return res.status(400).json({ error: 'Metal % is locked to the selected receipt' });
+                        }
+                        grossWtGm = src.gross_wt_gm ?? grossWtGm;
+                        metalPct = src.metal_pct ?? metalPct;
+                        const lockGross = grossWtGm ?? src.gross_wt_gm;
+                        const lockPct = metalPct ?? src.metal_pct;
+                        if (lockGross != null && lockPct != null) {
+                            const expectedFine = roundMetalGm(lockGross * (lockPct / 100));
+                            if (Math.abs(issueGm - expectedFine) > 0.001) {
+                                return res.status(400).json({
+                                    error: 'Net weight must match gross × purity for the selected receipt',
+                                });
+                            }
+                        } else if (Math.abs(issueGm - src.remaining_metal_gm) > 0.001) {
+                            return res.status(400).json({ error: 'Net weight is locked to the selected receipt' });
+                        }
+                    } else if (grossWtGm == null) grossWtGm = src.gross_wt_gm;
+                    if (metalPct == null) metalPct = src.metal_pct;
+                    if (!jewelleryMetal && src.jewellery_metal) jewelleryMetal = src.jewellery_metal;
+                }
+            } else if (metalKind !== 'issued') {
+                sourceLedgerEntryId = null;
+            }
             let referenceNo = trimStr(req.body.reference_no, 120);
             let narration = trimStr(req.body.narration, 2000);
             const entryDate = await coerceLedgerEntryDate(req, req.body.entry_date, query);
@@ -1132,8 +1342,9 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     reseller_user_id, entry_date, entry_type, amount_inr, customer_id, bill_id,
                     payment_mode, reference_no, bank_name, counterparty_name, narration, is_suspense,
                     ledger_scope, employee_id, pv_id, weight_kg, metal_gm, metal_cleared_gm, virtual_metal_inr,
-                    fixed_asset_metal, jewellery_metal, ledger_category
-                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+                    fixed_asset_metal, jewellery_metal, ledger_category,
+                    gross_wt_gm, metal_pct, source_ledger_entry_id
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
                  RETURNING *`,
                 [
                     req.user.id,
@@ -1158,6 +1369,9 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     fixedAssetMetal,
                     jewelleryMetal,
                     ledgerCategory,
+                    grossWtGm,
+                    metalPct,
+                    sourceLedgerEntryId,
                 ],
             );
             res.json({ success: true, entry: mapLedgerEntry(rows[0]) });
