@@ -10,6 +10,7 @@ import {
   ErpNoteNarrationsSection,
   type NarrationRow,
 } from '@/components/reseller/erp/ErpNoteNarrationsSection'
+import { ErpLedgerCategoriesSection } from '@/components/reseller/erp/ErpLedgerCategoriesSection'
 
 export function ErpEstimateNarrationsWorkspace() {
   const { operator, shadowUnlocked } = useErpOperator()
@@ -381,6 +382,8 @@ export function ErpEstimateNarrationsWorkspace() {
           </ul>
         )}
       </div>
+
+      <ErpLedgerCategoriesSection />
 
       <ErpNoteNarrationsSection
         kind="credit"

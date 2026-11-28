@@ -22,6 +22,8 @@ import {
 import { fetchGstInvoiceItems, type GstInvoiceItem } from '@/components/reseller/erp/ErpGstInvoiceItemsPanel'
 import { ChevronDown, ChevronRight, Layers, Loader2, Pencil, Plus, Save, Download, Trash2, X, Check } from 'lucide-react'
 import { appConfirm } from '@/lib/app-notice'
+import { useErpSlabSettings } from '@/hooks/useErpSlabSettings'
+import { slabRelatedFieldLabel } from '@/lib/erp-slab-settings'
 
 type SizeVariant = {
   size_label: string
@@ -102,6 +104,17 @@ const COST_FIELDS: { key: string; label: string; hint: string }[] = [
 
 export function ErpDesignMasterWorkspace() {
   const { canDeleteRecords } = useErpOperator()
+  const { settings: shopSlabSettings } = useErpSlabSettings()
+  const numFieldRows = NUM_FIELDS.map((f) => ({
+    ...f,
+    label: slabRelatedFieldLabel(f.key, shopSlabSettings.labels),
+  })).filter((f) => {
+    if (f.key === 'mc_rate_slab_r' || f.key === 'metal_slab_r_pct') return shopSlabSettings.enabled_keys.includes('R')
+    if (f.key === 'mc_rate_slab_r1' || f.key === 'metal_slab_r1_pct') return shopSlabSettings.enabled_keys.includes('R1')
+    if (f.key === 'mc_rate_slab_w' || f.key === 'metal_slab_w_pct') return shopSlabSettings.enabled_keys.includes('W')
+    if (f.key === 'mc_rate_slab_f' || f.key === 'metal_slab_f_pct') return shopSlabSettings.enabled_keys.includes('F')
+    return true
+  })
   const [tree, setTree] = useState<DesignStyle[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedStyleId, setSelectedStyleId] = useState<number | null>(null)
@@ -861,7 +874,7 @@ export function ErpDesignMasterWorkspace() {
                 />
               </label>
               <div className="grid grid-cols-2 gap-2">
-                {NUM_FIELDS.map(({ key, label }) => (
+                {numFieldRows.map(({ key, label }) => (
                   <label key={key} className="block text-[10px] font-semibold uppercase text-[var(--color-jewelry-black,#1a1814)]/45">
                     {label}
                     <input

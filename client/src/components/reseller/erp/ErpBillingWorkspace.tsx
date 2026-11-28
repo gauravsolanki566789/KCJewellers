@@ -6,6 +6,9 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import axios from '@/lib/axios'
 import { useAuth } from '@/hooks/useAuth'
 import { useErpOperator } from '@/context/ErpOperatorContext'
+import { useErpSlabSettings } from '@/hooks/useErpSlabSettings'
+import { billingSlabOptions, slabLabel } from '@/lib/erp-slab-settings'
+import { overlayCustomerSlabsOnLine, type CustomerSlabRow } from '@/lib/erp-customer-slab'
 import { type WholesaleUserFields } from '@/lib/customer-tier'
 import {
   applyInvoiceItemMrpMode,
@@ -25,7 +28,6 @@ import {
   perGramToDisplayRates,
   resolveErpSilverMetalRatePerG,
   type ErpRateSlab,
-  ERP_BILLING_SLAB_OPTIONS,
   erpSlabUsesWholesaleMetal,
   mcSlabFieldForBillingSlab,
 } from '@/lib/erp-billing-pricing'
@@ -406,6 +408,9 @@ export function ErpBillingWorkspace() {
       ),
     [auth.user],
   )
+  const { settings: shopSlabSettings } = useErpSlabSettings()
+  const slabSelectOptions = useMemo(() => billingSlabOptions(shopSlabSettings), [shopSlabSettings])
+  const [customerSlabs, setCustomerSlabs] = useState<CustomerSlabRow[]>([])
 
   const [customers, setCustomers] = useState<ErpCustomer[]>([])
   const [customerQ, setCustomerQ] = useState('')
@@ -1261,6 +1266,20 @@ export function ErpBillingWorkspace() {
     setCustomerPickIdx(-1)
     const assigned = normalizeErpCustomerSlab(c.rate_slab)
     requestSlabTransition(assigned)
+    void axios
+      .get<{ rows: CustomerSlabRow[] }>('/api/reseller/erp/customer-slabs', {
+        params: { customer_id: c.id },
+      })
+      .then((res) => {
+        const rows = res.data.rows || []
+        setCustomerSlabs(rows)
+        setLines((prev) =>
+          prev.map((line) =>
+            recalcLine(applyBillingSlabToLine(overlayCustomerSlabsOnLine(line, rows), rateSlab)),
+          ),
+        )
+      })
+      .catch(() => setCustomerSlabs([]))
     requestAnimationFrame(() => scanRef.current?.focus())
   }
 
@@ -1525,6 +1544,8 @@ export function ErpBillingWorkspace() {
       if (res.data.availability?.label) line.availability = res.data.availability.label
       const mrpNames = mrpInvoiceItemNames(gstInvoiceItems)
       line = applyInvoiceItemMrpMode(line, mrpNames)
+      line = overlayCustomerSlabsOnLine(line, customerSlabs)
+      line = applyBillingSlabToLine(line, rateSlab)
       line = recalcLine(line)
       setLines((prev) => [...prev, line])
       setScanCode('')
@@ -1554,6 +1575,8 @@ export function ErpBillingWorkspace() {
           let line = productToLine(local.product, code, rateSlab)
           const mrpNames = mrpInvoiceItemNames(gstInvoiceItems)
           line = applyInvoiceItemMrpMode(line, mrpNames)
+          line = overlayCustomerSlabsOnLine(line, customerSlabs)
+          line = applyBillingSlabToLine(line, rateSlab)
           line = recalcLine(line)
           setLines((prev) => [...prev, line])
         } else {
@@ -2024,6 +2047,7 @@ export function ErpBillingWorkspace() {
     setScanCode('')
     setCustomerQ('')
     setCustomerId(null)
+    setCustomerSlabs([])
     setCustomerName('')
     setMobile('')
     setAddress('')
@@ -2858,7 +2882,9 @@ export function ErpBillingWorkspace() {
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
           <div className={`${erpCardCls} w-full max-w-md`}>
             <h3 className="mb-3 text-sm font-semibold">
-              {pendingSlab ? `Slab ${pendingSlab} — wholesale metal rate` : 'Edit wholesale metal rate'}
+              {pendingSlab
+                ? `Slab ${slabLabel(pendingSlab, shopSlabSettings.labels)} — wholesale metal rate`
+                : 'Edit wholesale metal rate'}
             </h3>
             <div className="grid gap-3">
               <label className="text-xs font-medium text-[var(--color-jewelry-black,#1a1814)]/60">
@@ -2884,7 +2910,7 @@ export function ErpBillingWorkspace() {
             </div>
             <div className="mt-4 flex gap-2">
               <button type="button" className={erpBtnPrimary} onClick={applyWholesaleSlab}>
-                {pendingSlab ? `Apply slab ${pendingSlab}` : 'Apply wholesale rates'}
+                {pendingSlab ? `Apply slab ${slabLabel(pendingSlab, shopSlabSettings.labels)}` : 'Apply wholesale rates'}
               </button>
               <button type="button" className={erpBtnGhost} onClick={() => { setShowWholesaleModal(false); setPendingSlab(null) }}>
                 Cancel
@@ -2908,6 +2934,7 @@ export function ErpBillingWorkspace() {
                 setCustomerName(e.target.value)
                 setCustomerQ(e.target.value)
                 setCustomerId(null)
+                setCustomerSlabs([])
                 setSelectedCustomer(null)
                 setCustomerPickIdx(-1)
               }}
@@ -2948,7 +2975,7 @@ export function ErpBillingWorkspace() {
               value={slabSelectValue}
               onChange={(e) => onSlabChange(e.target.value as ErpRateSlab)}
             >
-              {ERP_BILLING_SLAB_OPTIONS.map((o) => (
+              {slabSelectOptions.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>

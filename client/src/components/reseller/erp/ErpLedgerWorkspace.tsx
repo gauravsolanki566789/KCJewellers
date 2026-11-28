@@ -41,6 +41,10 @@ import {
 } from '@/lib/erp-date-format'
 import { formatPvWeightGrams } from '@/lib/erp-pv-weight'
 import { formatPvCategoryLabel, PV_CATEGORY_OPTIONS } from '@/lib/erp-pv-category'
+import {
+  ErpLedgerCategoriesSection,
+  type LedgerCategoryRow,
+} from '@/components/reseller/erp/ErpLedgerCategoriesSection'
 import { formatLedgerTransactionKind } from '@/lib/erp-ledger-labels'
 import { exportDaybookToTallyLocal } from '@/lib/erp-tally-export'
 import { downloadDaybookPdf, type DaybookExportData } from '@/lib/erp-ledger-statement-pdf'
@@ -441,6 +445,7 @@ function emptyPaymentForm(metalLedger = false) {
     metal_pct: '',
     convert_inr_to_metal: false,
     opening_side: 'credit' as 'credit' | 'debit',
+    ledger_category: '',
   }
 }
 
@@ -477,6 +482,7 @@ function emptyPvForm(metalLedger = false) {
     payment_mode: metalLedger ? 'metal' : 'neft',
     narration: '',
     customer_id: '',
+    receipt_no: '',
   }
 }
 
@@ -574,6 +580,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
     }[]
   >([])
   const [designTree, setDesignTree] = useState<DesignMasterStyle[]>([])
+  const [ledgerCategories, setLedgerCategories] = useState<LedgerCategoryRow[]>([])
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editDraft, setEditDraft] = useState<Partial<ErpLedgerEntry>>({})
   const [addingInline, setAddingInline] = useState(false)
@@ -612,6 +619,17 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
     const style = designTree.find((s) => normDesignKey(s.style_code) === normDesignKey(pvForm.style_code))
     return (style?.skus || []).map((sk) => sk.sku).filter(Boolean)
   }, [designTree, pvForm.style_code])
+  const categoryOptions = useMemo(
+    () =>
+      ledgerCategories.length
+        ? ledgerCategories.map((c) => ({ value: c.slug, label: c.label }))
+        : [...PV_CATEGORY_OPTIONS],
+    [ledgerCategories],
+  )
+  const categoryLabel = (slug?: string | null) => {
+    const s = String(slug || '').toLowerCase()
+    return categoryOptions.find((o) => o.value === s)?.label || formatPvCategoryLabel(slug)
+  }
 
   useEffect(() => {
     const d = loadLedgerDraft(laneMode)
@@ -852,6 +870,10 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
       .get<{ tree: DesignMasterStyle[] }>('/api/reseller/erp/design-master/tree')
       .then((r) => setDesignTree(r.data.tree || []))
       .catch(() => setDesignTree([]))
+    void axios
+      .get<{ categories: LedgerCategoryRow[] }>('/api/reseller/erp/ledger/categories')
+      .then((r) => setLedgerCategories(r.data.categories || []))
+      .catch(() => setLedgerCategories([]))
   }, [loadCustomers])
 
   useEffect(() => {
@@ -920,6 +942,10 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
       alert('Select a customer to set opening balance')
       return
     }
+    if (metalLedgerShop && !form.ledger_category) {
+      alert('Select a category')
+      return
+    }
     setBusy(true)
     try {
       const metalKind = isMetal ? (convertInrToGm ? 'received' : form.metal_kind) : undefined
@@ -978,6 +1004,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
               ? 'debit'
               : 'credit'
             : undefined,
+        ledger_category: form.ledger_category || null,
       })
       setForm(emptyPaymentForm(metalLedgerShop))
       setPayCustomerQ('')
@@ -1550,7 +1577,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
       return
     }
     if (metalLedgerShop && !pvForm.pv_category) {
-      alert('Select a category (Metal, Item, Repair, Return, Sample, or Non metal)')
+      alert('Select a category')
       return
     }
     if (
@@ -1575,6 +1602,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
         weight_gm: generalPurchase ? 0 : weightGm,
         general_purchase: generalPurchase,
         pv_category: pvForm.pv_category || null,
+        receipt_no: pvForm.receipt_no || null,
         customer_id: pvForm.customer_id ? Number(pvForm.customer_id) : null,
       })
       if (res.data.general_purchase) {
@@ -2350,6 +2378,23 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                     <option value="fixed_asset_issue">Fixed asset metal issued to customer</option>
                   </select>
                 </label>
+                {metalLedgerShop ? (
+                  <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                    Category
+                    <select
+                      className={`${erpInputCls} mt-1`}
+                      value={form.ledger_category}
+                      onChange={(e) => setForm({ ...form, ledger_category: e.target.value })}
+                    >
+                      <option value="">Select category…</option>
+                      {categoryOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 {form.metal_kind === 'mc_adjust' ? (
                   <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
                     MC amount (₹)
@@ -2513,6 +2558,23 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                 {metalLedgerShop ? <option value="opening">Opening balance</option> : null}
               </select>
             </label>
+            {metalLedgerShop ? (
+              <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+                Category
+                <select
+                  className={`${erpInputCls} mt-1`}
+                  value={form.ledger_category}
+                  onChange={(e) => setForm({ ...form, ledger_category: e.target.value })}
+                >
+                  <option value="">Select category…</option>
+                  {categoryOptions.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {metalLedgerShop && form.entry_type === 'opening' ? (
               <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
                 Opening side
@@ -2710,18 +2772,6 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                 </span>
               ) : null}
             </label>
-            <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
-              Vendor / supplier
-              <input className={`${erpInputCls} mt-1`} value={pvForm.vendor_name} onChange={(e) => setPvForm({ ...pvForm, vendor_name: e.target.value })} />
-            </label>
-            <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
-              Vendor bill ref
-              <input className={`${erpInputCls} mt-1`} value={pvForm.vendor_bill_ref} onChange={(e) => setPvForm({ ...pvForm, vendor_bill_ref: e.target.value })} placeholder="Receipt no" />
-            </label>
-            <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
-              Amount (₹){metalLedgerShop ? ' — optional if metal mode' : ''}
-              <input className={`${erpInputCls} mt-1 tabular-nums`} inputMode="decimal" value={pvForm.amount_inr} onChange={(e) => setPvForm({ ...pvForm, amount_inr: e.target.value.replace(/[^\d.]/g, '') })} />
-            </label>
             {metalLedgerShop ? (
               <>
                 <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
@@ -2817,7 +2867,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                   }}
                 >
                   <option value="">Select category…</option>
-                  {PV_CATEGORY_OPTIONS.map((o) => (
+                  {categoryOptions.map((o) => (
                     <option key={o.value} value={o.value}>
                       {o.label}
                     </option>
@@ -2883,6 +2933,22 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                 ))}
               </select>
             </label>
+            <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+              Vendor / supplier
+              <input className={`${erpInputCls} mt-1`} value={pvForm.vendor_name} onChange={(e) => setPvForm({ ...pvForm, vendor_name: e.target.value })} />
+            </label>
+            <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+              Vendor bill ref
+              <input className={`${erpInputCls} mt-1`} value={pvForm.vendor_bill_ref} onChange={(e) => setPvForm({ ...pvForm, vendor_bill_ref: e.target.value })} />
+            </label>
+            <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+              Receipt no
+              <input className={`${erpInputCls} mt-1`} value={pvForm.receipt_no} onChange={(e) => setPvForm({ ...pvForm, receipt_no: e.target.value })} />
+            </label>
+            <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55">
+              Amount (₹){metalLedgerShop ? ' — optional if metal mode' : ''}
+              <input className={`${erpInputCls} mt-1 tabular-nums`} inputMode="decimal" value={pvForm.amount_inr} onChange={(e) => setPvForm({ ...pvForm, amount_inr: e.target.value.replace(/[^\d.]/g, '') })} />
+            </label>
             <label className="text-xs text-[var(--color-jewelry-black,#1a1814)]/55 sm:col-span-2">
               Notes
               <textarea className={`${erpInputCls} mt-1 min-h-[72px] py-2`} value={pvForm.narration} onChange={(e) => setPvForm({ ...pvForm, narration: e.target.value })} />
@@ -2910,7 +2976,7 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                       <p className="font-semibold text-[var(--color-jewelry-black,#1a1814)]">{pv.pv_number}</p>
                       <p className="text-[11px] text-[var(--color-jewelry-black,#1a1814)]/55">
                         {pv.vendor_name || 'Vendor'}
-                        {pv.pv_category ? ` · ${formatPvCategoryLabel(pv.pv_category)}` : ''}
+                        {pv.pv_category ? ` · ${categoryLabel(pv.pv_category)}` : ''}
                         {pv.style_code ? ` · ${pv.style_code}` : ''}
                         {pv.sku ? ` / ${pv.sku}` : ''} ·{' '}
                         {formatPvWeightGrams(pv.weight_kg)} · pending {formatPvWeightGrams(pv.pending_weight_kg)} ·{' '}
@@ -2938,6 +3004,11 @@ export function ErpLedgerWorkspace({ laneMode = false }: { laneMode?: boolean })
                   </div>
                 ))}
               </div>
+            </div>
+          ) : null}
+          {metalLedgerShop ? (
+            <div className="pt-2">
+              <ErpLedgerCategoriesSection onChanged={(rows) => setLedgerCategories(rows)} />
             </div>
           ) : null}
         </div>

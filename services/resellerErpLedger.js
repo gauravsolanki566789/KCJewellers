@@ -199,6 +199,7 @@ function mapLedgerEntry(row, extras = {}) {
         weight_kg: row.weight_kg != null ? Number(row.weight_kg) : null,
         metal_gm: metalGmFromLedgerRow(row) || null,
         jewellery_metal: normalizeJewelleryMetal(row.jewellery_metal) || null,
+        ledger_category: row.ledger_category || null,
         created_at: row.created_at,
         updated_at: row.updated_at,
     };
@@ -252,6 +253,8 @@ async function ensureLedgerSchema(pool) {
             ADD COLUMN IF NOT EXISTS fixed_asset_metal BOOLEAN NOT NULL DEFAULT false;
         ALTER TABLE reseller_erp_ledger_entries
             ADD COLUMN IF NOT EXISTS jewellery_metal VARCHAR(16);
+        ALTER TABLE reseller_erp_ledger_entries
+            ADD COLUMN IF NOT EXISTS ledger_category VARCHAR(64);
         CREATE TABLE IF NOT EXISTS reseller_erp_daybook_openings (
             id SERIAL PRIMARY KEY,
             reseller_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1118,13 +1121,19 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     : Number.isFinite(weightKg)
                       ? weightKg
                       : null;
+            const ledgerCategory = trimStr(
+                req.body.ledger_category || req.body.pv_category || req.body.category,
+                64,
+            )
+                .toLowerCase()
+                .replace(/[\s-]+/g, '_') || null;
             const rows = await query(
                 `INSERT INTO reseller_erp_ledger_entries (
                     reseller_user_id, entry_date, entry_type, amount_inr, customer_id, bill_id,
                     payment_mode, reference_no, bank_name, counterparty_name, narration, is_suspense,
                     ledger_scope, employee_id, pv_id, weight_kg, metal_gm, metal_cleared_gm, virtual_metal_inr,
-                    fixed_asset_metal, jewellery_metal
-                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+                    fixed_asset_metal, jewellery_metal, ledger_category
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
                  RETURNING *`,
                 [
                     req.user.id,
@@ -1148,6 +1157,7 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     virtualMetalFlag,
                     fixedAssetMetal,
                     jewelleryMetal,
+                    ledgerCategory,
                 ],
             );
             res.json({ success: true, entry: mapLedgerEntry(rows[0]) });
@@ -1541,6 +1551,12 @@ function registerResellerErpLedgerRoutes(app, deps) {
                 const gmTxt = Math.abs(nextMetal).toFixed(3);
                 narration = String(narration || '').replace(/\d+(?:\.\d+)?\s*g\b/i, `${gmTxt} g`);
             }
+            const nextLedgerCategoryRaw = trimStr(
+                req.body.ledger_category || req.body.pv_category || req.body.category,
+                64,
+            )
+                .toLowerCase()
+                .replace(/[\s-]+/g, '_');
             const rows = await query(
                 `UPDATE reseller_erp_ledger_entries SET
                     entry_date = COALESCE($1::date, entry_date),
@@ -1557,8 +1573,9 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     employee_id = $12,
                     weight_kg = $13,
                     metal_gm = $14,
+                    ledger_category = COALESCE($15, ledger_category),
                     updated_at = NOW()
-                 WHERE id = $15 AND reseller_user_id = $16
+                 WHERE id = $16 AND reseller_user_id = $17
                  RETURNING *`,
                 [
                     entryDate,
@@ -1575,6 +1592,7 @@ function registerResellerErpLedgerRoutes(app, deps) {
                     req.body.employee_id != null ? parseInt(String(req.body.employee_id), 10) || null : null,
                     nextWeightKg,
                     nextMetal,
+                    nextLedgerCategoryRaw || null,
                     id,
                     req.user.id,
                 ],

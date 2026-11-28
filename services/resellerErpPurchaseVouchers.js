@@ -7,13 +7,24 @@ const { requireJainavUnlockedAdmin, isErpShopAdmin } = require('./resellerErpOpe
 const { loadJewelleryLedgerMetalEnabled } = require('./erpJewelleryLedgerSettings');
 const { roundMetalGm, normalizeJewelleryMetal } = require('./erpLedgerMetal');
 const { istTodayIso } = require('./erpDateNormalize');
+const { listCategories, slugify } = require('./resellerErpLedgerCategories');
 
 const PV_CATEGORY_VALUES = new Set(['metal', 'item', 'repair', 'return', 'sample', 'non_metal']);
 
 function normalizePvCategory(raw) {
-    const s = trimStr(raw, 32).toLowerCase().replace(/[\s-]+/g, '_');
+    const s = slugify(raw) || trimStr(raw, 64).toLowerCase().replace(/[\s-]+/g, '_');
     if (s === 'nonmetal') return 'non_metal';
-    return PV_CATEGORY_VALUES.has(s) ? s : null;
+    if (!s) return null;
+    if (PV_CATEGORY_VALUES.has(s)) return s;
+    return s;
+}
+
+async function resolvePvCategory(query, resellerUserId, raw) {
+    const s = normalizePvCategory(raw);
+    if (!s) return null;
+    const cats = await listCategories(query, resellerUserId);
+    const hit = cats.find((c) => c.slug === s);
+    return hit ? hit.slug : PV_CATEGORY_VALUES.has(s) ? s : null;
 }
 
 function pvCategoryDisplayLabel(code) {
@@ -138,6 +149,10 @@ async function ensurePurchaseSchema(pool) {
             ADD COLUMN IF NOT EXISTS style_code VARCHAR(128);
         ALTER TABLE reseller_erp_purchase_vouchers
             ADD COLUMN IF NOT EXISTS sku VARCHAR(128);
+        ALTER TABLE reseller_erp_purchase_vouchers
+            ADD COLUMN IF NOT EXISTS receipt_no VARCHAR(120);
+        ALTER TABLE reseller_erp_ledger_entries
+            ADD COLUMN IF NOT EXISTS ledger_category VARCHAR(64);
     `);
 }
 
@@ -209,6 +224,7 @@ function mapPv(row) {
         customer_gstin: row.customer_gstin || null,
         customer_address: row.customer_address || null,
         metal_rate_per_gm: row.metal_rate_per_gm != null ? Number(row.metal_rate_per_gm) : null,
+        receipt_no: row.receipt_no || null,
         created_at: row.created_at,
         updated_at: row.updated_at,
     };
@@ -539,6 +555,12 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
                     if (!cust.length) return res.status(400).json({ error: 'Customer not found' });
                 }
                 const ref = vendorBillRef || trimStr(req.body.reference_no, 120);
+                const receiptNo = trimStr(req.body.receipt_no, 120);
+                const generalCat = await resolvePvCategory(
+                    query,
+                    req.user.id,
+                    req.body.pv_category || req.body.category,
+                );
                 const ledgerNarration =
                     narrationRaw ||
                     (vendorName
@@ -550,18 +572,19 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
                     `INSERT INTO reseller_erp_ledger_entries (
                         reseller_user_id, entry_date, entry_type, amount_inr, payment_mode,
                         reference_no, counterparty_name, narration, is_suspense, ledger_scope,
-                        customer_id
-                     ) VALUES ($1,$2,'purchase',$3,$4,$5,$6,$7,false,'official',$8)
+                        customer_id, ledger_category
+                     ) VALUES ($1,$2,'purchase',$3,$4,$5,$6,$7,false,'official',$8,$9)
                      RETURNING id`,
                     [
                         req.user.id,
                         entryDate,
                         amount,
                         paymentMode,
-                        ref,
+                        ref || receiptNo,
                         vendorName,
                         ledgerNarration,
                         customerId,
+                        generalCat,
                     ],
                 );
                 return res.json({
@@ -590,13 +613,18 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
             const entryDate = await coercePvEntryDate(req, query, req.body.entry_date);
             const vendorName = trimStr(req.body.vendor_name, 255);
             const vendorBillRef = trimStr(req.body.vendor_bill_ref, 120);
+            const receiptNo = trimStr(req.body.receipt_no, 120);
             const metalType = trimStr(req.body.metal_type, 32);
             const narration = trimStr(req.body.narration, 2000);
-            let pvCategory = normalizePvCategory(req.body.pv_category || req.body.category);
+            let pvCategory = await resolvePvCategory(
+                query,
+                req.user.id,
+                req.body.pv_category || req.body.category,
+            );
             if (metalLedgerOn) {
                 if (!pvCategory) {
                     return res.status(400).json({
-                        error: 'Select a category (Metal, Item, Repair, Return, Sample, or Non metal)',
+                        error: 'Select a category',
                     });
                 }
             } else {
@@ -627,8 +655,8 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
             const insertPvSql = `INSERT INTO reseller_erp_purchase_vouchers (
                     reseller_user_id, pv_number, entry_date, vendor_name, vendor_bill_ref,
                     amount_inr, weight_kg, metal_type, pv_category, narration, status, customer_id,
-                    metal_rate_per_gm, style_code, sku
-                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'open',$11,$12,$13,$14)
+                    metal_rate_per_gm, style_code, sku, receipt_no
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'open',$11,$12,$13,$14,$15)
                  RETURNING *`;
             const insertPvParams = [
                 req.user.id,
@@ -645,13 +673,14 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
                 metalRatePerGm,
                 styleCode || null,
                 skuCode || null,
+                receiptNo || null,
             ];
             let pvRows;
             try {
                 pvRows = await query(insertPvSql, insertPvParams);
             } catch (e) {
                 const msg = String(e.message || '');
-                if (msg.includes('style_code') || msg.includes('sku')) {
+                if (msg.includes('style_code') || msg.includes('sku') || msg.includes('receipt_no')) {
                     await query(
                         `ALTER TABLE reseller_erp_purchase_vouchers
                          ADD COLUMN IF NOT EXISTS style_code VARCHAR(128)`,
@@ -659,6 +688,10 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
                     await query(
                         `ALTER TABLE reseller_erp_purchase_vouchers
                          ADD COLUMN IF NOT EXISTS sku VARCHAR(128)`,
+                    );
+                    await query(
+                        `ALTER TABLE reseller_erp_purchase_vouchers
+                         ADD COLUMN IF NOT EXISTS receipt_no VARCHAR(120)`,
                     );
                     pvRows = await query(insertPvSql, insertPvParams);
                 } else {
@@ -680,8 +713,8 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
                 `INSERT INTO reseller_erp_ledger_entries (
                     reseller_user_id, entry_date, entry_type, amount_inr, payment_mode,
                     reference_no, counterparty_name, narration, is_suspense, ledger_scope,
-                    pv_id, weight_kg, metal_gm, customer_id, jewellery_metal
-                 ) VALUES ($1,$2,'purchase',$3,$4,$5,$6,$7,false,'official',$8,$9,$10,$11,$12)
+                    pv_id, weight_kg, metal_gm, customer_id, jewellery_metal, ledger_category
+                 ) VALUES ($1,$2,'purchase',$3,$4,$5,$6,$7,false,'official',$8,$9,$10,$11,$12,$13)
                  RETURNING id`,
                 [
                     req.user.id,
@@ -696,6 +729,7 @@ function registerResellerErpPurchaseVoucherRoutes(app, deps) {
                     ledgerMetalGm,
                     customerId,
                     jewelleryMetal,
+                    pvCategory,
                 ],
             );
 

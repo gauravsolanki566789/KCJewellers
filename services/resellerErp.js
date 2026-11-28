@@ -37,6 +37,9 @@ const {
     createCollectedCashLedgerEntry,
     deleteLedgerEntriesForOfficialBills,
 } = require('./resellerErpLedger');
+const { registerResellerErpLedgerCategoryRoutes } = require('./resellerErpLedgerCategories');
+const { registerResellerErpCounterReportRoutes } = require('./resellerErpCounterReport');
+const { registerResellerErpSlabSettingsRoutes } = require('./resellerErpSlabSettings');
 const {
     ensureCashBookCustomers,
     isInternalErpCustomerRow,
@@ -1068,6 +1071,9 @@ function registerResellerErpRoutes(app, deps) {
     registerTagEditingRoutes(app, { query, checkAuth, requireJson, erpGate });
 
     registerResellerErpLedgerRoutes(app, { query, pool, checkAuth, requireJson, erpGate });
+    registerResellerErpLedgerCategoryRoutes(app, { query, pool, checkAuth, requireJson, erpGate });
+    registerResellerErpCounterReportRoutes(app, { query, pool, checkAuth, requireJson, erpGate });
+    registerResellerErpSlabSettingsRoutes(app, { query, pool, checkAuth, requireJson, erpGate });
     registerResellerErpPurchaseVoucherRoutes(app, { query, pool, checkAuth, requireJson, erpGate });
     registerResellerErpProfitRoutes(app, { query, pool, checkAuth, requireJson, erpGate });
     registerResellerErpRunningTagRoutes(app, { query, pool, checkAuth, requireJson, erpGate });

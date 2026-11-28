@@ -55,8 +55,8 @@ import {
   ReportsWorkspace,
   ScannerWorkspace,
   SettingsWorkspace,
-  SlabsLinkPanel,
 } from '@/components/reseller/erp/ResellerErpWorkspaces'
+import { ErpSlabsWorkspace } from '@/components/reseller/erp/ErpSlabsWorkspace'
 
 function ModuleBody({ moduleId }: { moduleId: ResellerErpModuleId }) {
   const auth = useAuth()
@@ -112,7 +112,7 @@ function ModuleBody({ moduleId }: { moduleId: ResellerErpModuleId }) {
     case 'sales-reports':
       return <ReportsWorkspace />
     case 'slabs':
-      return <SlabsLinkPanel />
+      return <ErpSlabsWorkspace />
     case 'scanner':
       return <ScannerWorkspace />
     case 'integrations':

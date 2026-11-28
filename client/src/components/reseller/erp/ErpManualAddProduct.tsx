@@ -6,6 +6,8 @@ import { Loader2, Plus, Printer, Trash2 } from 'lucide-react'
 import { ErpBillingSuggestField } from '@/components/reseller/erp/ErpBillingSuggestField'
 import { erpBtnGhost, erpBtnPrimary, erpCardCls, erpInputCls, erpErr, useErpFlash } from '@/components/reseller/erp/erp-ui'
 import { printStockLabels } from '@/lib/erp-print-labels'
+import { useErpSlabSettings } from '@/hooks/useErpSlabSettings'
+import { slabRelatedFieldLabel } from '@/lib/erp-slab-settings'
 import type { ErpHardwareSettings } from '@/lib/erp-hardware'
 
 type DesignStyle = {
@@ -97,6 +99,8 @@ export function ErpManualAddProduct({
   const [productOptions, setProductOptions] = useState<Record<string, string[]>>({})
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useErpFlash()
+  const { settings: shopSlabSettings } = useErpSlabSettings()
+  const mcL = (key: string) => slabRelatedFieldLabel(key, shopSlabSettings.labels)
   const [msgTone, setMsgTone] = useState<'ok' | 'err'>('ok')
   const skuRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const wtRefs = useRef<Record<string, HTMLInputElement | null>>({})
@@ -506,10 +510,10 @@ export function ErpManualAddProduct({
               </div>
               {def ? (
                 <p className="text-[10px] text-[var(--color-jewelry-black,#1a1814)]/55">
-                  MC {def.mc_rate ?? '—'} · MC R {def.mc_rate_slab_r ?? '—'} · MC W {def.mc_rate_slab_w ?? '—'} ·
-                  MC F {def.mc_rate_slab_f ?? '—'} · Met R% {def.metal_slab_r_pct ?? '—'} · Met R1%{' '}
-                  {def.metal_slab_r1_pct ?? '—'} · Met W% {def.metal_slab_w_pct ?? '—'} ·{' '}
-                  {def.mc_type || 'MCType —'}
+                  MC {def.mc_rate ?? '—'} · {mcL('mc_rate_slab_r')} {def.mc_rate_slab_r ?? '—'} · {mcL('mc_rate_slab_w')}{' '}
+                  {def.mc_rate_slab_w ?? '—'} · {mcL('mc_rate_slab_f')} {def.mc_rate_slab_f ?? '—'} · {mcL('metal_slab_r_pct')}{' '}
+                  {def.metal_slab_r_pct ?? '—'} · {mcL('metal_slab_r1_pct')} {def.metal_slab_r1_pct ?? '—'} · {mcL('metal_slab_w_pct')}{' '}
+                  {def.metal_slab_w_pct ?? '—'} · {def.mc_type || 'MCType —'}
                 </p>
               ) : null}
             </div>

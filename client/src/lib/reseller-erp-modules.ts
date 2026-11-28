@@ -276,7 +276,7 @@ export const RESELLER_ERP_MODULES: ResellerErpModule[] = [
   },
   {
     id: 'slabs',
-    title: 'MC slabs',
+    title: 'Slabs',
     short: 'Slabs',
     description: '',
     icon: Layers,

@@ -27,6 +27,8 @@ import {
   previewCustomerBalancesPdf,
 } from '@/lib/erp-ledger-customer-balances-pdf'
 import { ErpLedgerSalesReportsSection } from '@/components/reseller/erp/ErpLedgerSalesReportsSection'
+import { ErpCounterWiseReport } from '@/components/reseller/erp/ErpCounterWiseReport'
+import { useJewelleryLedgerMetalEnabled } from '@/hooks/useJewelleryLedgerMetalEnabled'
 
 type ReportId =
   | 'customer_balances'
@@ -34,6 +36,7 @@ type ReportId =
   | 'metal_balances_by_type'
   | 'gst_sales_register'
   | 'lane_all_bills_detail'
+  | 'counter_wise'
 
 type ReportMeta = {
   id: ReportId
@@ -101,6 +104,7 @@ export function ErpLedgerReportsPanel({
   onOpenCustomerLedger,
 }: Props) {
   const auth = useAuth()
+  const { enabled: metalLedgerOn } = useJewelleryLedgerMetalEnabled()
   const [activeReport, setActiveReport] = useState<ReportId | null>(null)
   const [from, setFrom] = useState(defaultFrom)
   const [to, setTo] = useState(defaultTo)
@@ -316,7 +320,20 @@ export function ErpLedgerReportsPanel({
           description: 'Completed GST sales — summary & metal totals',
           icon: Receipt,
         }
-    const allReports = [...REPORTS, salesReport]
+    const allReports = [
+      ...REPORTS,
+      salesReport,
+      ...(metalLedgerOn
+        ? [
+            {
+              id: 'counter_wise' as const,
+              title: 'Counter wise report',
+              description: 'Metal, item, approval & stock — opening / receipt / issue / closing (g)',
+              icon: FileText,
+            },
+          ]
+        : []),
+    ]
     return (
       <div className="space-y-3">
         <p className="text-sm font-semibold text-[var(--color-jewelry-black,#1a1814)]">Ledger reports</p>
@@ -350,6 +367,16 @@ export function ErpLedgerReportsPanel({
       <ErpLedgerSalesReportsSection
         reportId={activeReport}
         laneMode={laneMode}
+        defaultFrom={defaultFrom}
+        defaultTo={defaultTo}
+        onBack={() => setActiveReport(null)}
+      />
+    )
+  }
+
+  if (activeReport === 'counter_wise') {
+    return (
+      <ErpCounterWiseReport
         defaultFrom={defaultFrom}
         defaultTo={defaultTo}
         onBack={() => setActiveReport(null)}
